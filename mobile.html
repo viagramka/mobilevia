@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Viagram Mobile</title>
+    <title>Viagramka Mobile</title>
     <style>
         /* ========== RESET & BASE ========== */
         * {
@@ -1623,7 +1623,7 @@
     <!-- Server Offline -->
     <div class="server-offline" id="serverOffline">
         
-        <p>загрузка Viagramka...</p>
+        <p>загружаем Viagramka...</p>
     </div>
 
     <!-- Auth Modal -->
@@ -2012,6 +2012,377 @@ const settingsCategories = document.querySelectorAll('[data-category]');
 // Server offline
 const serverOffline = document.getElementById('serverOffline');
 const settingsBtn = document.getElementById('settingsBtn');
+
+// ========== УПРАВЛЕНИЕ КЛАВИАТУРОЙ ПРИ РЕДАКТИРОВАНИИ ==========
+
+// Добавьте этот код после объявления переменных, перед функциями
+
+let keyboardHeight = 0;
+let isKeyboardVisible = false;
+let originalMessageInputStyle = {};
+
+// Функция для определения высоты клавиатуры
+function detectKeyboardHeight() {
+    const visualViewport = window.visualViewport;
+    if (visualViewport) {
+        const windowHeight = window.innerHeight;
+        const visualHeight = visualViewport.height;
+        keyboardHeight = windowHeight - visualHeight;
+        return keyboardHeight > 0;
+    }
+    return false;
+}
+
+// Слушаем изменения visualViewport (появление/исчезновение клавиатуры)
+if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', () => {
+        const wasVisible = isKeyboardVisible;
+        isKeyboardVisible = detectKeyboardHeight();
+        
+        // Если клавиатура появилась или исчезла
+        if (wasVisible !== isKeyboardVisible) {
+            if (isKeyboardVisible && (isEditing || isReplying)) {
+                expandMessageInput();
+            } else if (!isKeyboardVisible) {
+                restoreMessageInput();
+            }
+        }
+    });
+}
+
+// Функция для расширения поля ввода
+function expandMessageInput() {
+    const messageContainer = document.querySelector('.message-input-container');
+    const mainContent = document.querySelector('.main-content');
+    const chatMessages = document.getElementById('chatMessages');
+    
+    if (!messageContainer || !mainContent || !chatMessages) return;
+    
+    // Сохраняем оригинальные стили
+    originalMessageInputStyle = {
+        containerPosition: messageContainer.style.position,
+        containerBottom: messageContainer.style.bottom,
+        containerZIndex: messageContainer.style.zIndex,
+        mainContentPadding: mainContent.style.paddingBottom,
+        chatMessagesHeight: chatMessages.style.height
+    };
+    
+    // Расширяем поле ввода
+    messageContainer.style.position = 'fixed';
+    messageContainer.style.bottom = keyboardHeight + 'px';
+    messageContainer.style.left = '0';
+    messageContainer.style.right = '0';
+    messageContainer.style.zIndex = '1000';
+    messageContainer.style.backgroundColor = 'var(--bg-secondary)';
+    messageContainer.style.boxShadow = '0 -4px 12px rgba(0,0,0,0.2)';
+    
+    // Адаптируем основную область
+    mainContent.style.paddingBottom = (messageContainer.offsetHeight + keyboardHeight) + 'px';
+    chatMessages.style.height = `calc(100vh - ${messageContainer.offsetHeight + keyboardHeight + 70}px)`;
+    
+    // Прокручиваем к последнему сообщению
+    setTimeout(scrollToBottom, 100);
+}
+
+// Функция для восстановления обычного вида
+function restoreMessageInput() {
+    const messageContainer = document.querySelector('.message-input-container');
+    const mainContent = document.querySelector('.main-content');
+    const chatMessages = document.getElementById('chatMessages');
+    
+    if (!messageContainer || !mainContent || !chatMessages) return;
+    
+    // Восстанавливаем оригинальные стили
+    messageContainer.style.position = originalMessageInputStyle.containerPosition || '';
+    messageContainer.style.bottom = originalMessageInputStyle.containerBottom || '';
+    messageContainer.style.zIndex = originalMessageInputStyle.containerZIndex || '';
+    messageContainer.style.left = '';
+    messageContainer.style.right = '';
+    messageContainer.style.backgroundColor = '';
+    messageContainer.style.boxShadow = '';
+    
+    mainContent.style.paddingBottom = originalMessageInputStyle.mainContentPadding || '';
+    chatMessages.style.height = originalMessageInputStyle.chatMessagesHeight || '';
+}
+
+// Модифицированная функция replyToMessage
+function replyToMessage() {
+    if (!contextMenuMessage) return;
+    messageToReply = contextMenuMessage;
+    isReplying = true;
+    
+    replyContainer.classList.remove('hidden');
+    const sender = replyContainer.querySelector('.reply-sender');
+    const preview = replyContainer.querySelector('.reply-preview');
+    
+    if (sender) sender.textContent = messageToReply.senderName || 'Пользователь';
+    if (preview) {
+        let text = messageToReply.text || (messageToReply.imageUrl ? '📷 Фото' : (messageToReply.audioUrl ? '🎤 Голосовое' : 'Сообщение'));
+        preview.textContent = text;
+    }
+    
+    messageInput.focus();
+    
+    // Если клавиатура видима, расширяем поле
+    if (isKeyboardVisible) {
+        setTimeout(expandMessageInput, 300);
+    }
+}
+
+// Модифицированная функция editMessage
+function editMessage() {
+    if (!contextMenuMessage || contextMenuMessage.senderId !== currentUser.uid) return;
+    messageToEdit = contextMenuMessage;
+    isEditing = true;
+    
+    editContainer.classList.remove('hidden');
+    const preview = editContainer.querySelector('.edit-preview');
+    if (preview) {
+        preview.textContent = messageToEdit.text || 'Фото/аудио нельзя редактировать';
+    }
+    
+    if (messageToEdit.text && !messageToEdit.imageUrl && !messageToEdit.audioUrl) {
+        messageInput.value = messageToEdit.text;
+        resizeTextarea();
+        messageInput.disabled = false;
+        sendBtn.disabled = false;
+    } else {
+        messageInput.value = '';
+        messageInput.disabled = true;
+        sendBtn.disabled = true;
+    }
+    
+    messageInput.focus();
+    
+    // Если клавиатура видима, расширяем поле
+    if (isKeyboardVisible) {
+        setTimeout(expandMessageInput, 300);
+    }
+}
+
+// Модифицированная функция cancelReply
+function cancelReply() {
+    isReplying = false;
+    messageToReply = null;
+    replyContainer.classList.add('hidden');
+    
+    // Восстанавливаем обычный вид
+    restoreMessageInput();
+}
+
+// Модифицированная функция cancelEdit
+function cancelEdit() {
+    isEditing = false;
+    messageToEdit = null;
+    editContainer.classList.add('hidden');
+    messageInput.value = '';
+    messageInput.disabled = false;
+    sendBtn.disabled = false;
+    resizeTextarea();
+    
+    // Восстанавливаем обычный вид
+    restoreMessageInput();
+}
+
+// Модифицированная функция sendMessage (добавьте восстановление после отправки)
+async function sendMessage() {
+    const messageText = messageInput.value.trim();
+    
+    if (isEditing && messageToEdit) {
+        await updateMessage(messageText);
+        // restoreMessageInput() вызывается внутри updateMessage через cancelEdit
+        return;
+    }
+    
+    if (!messageText && !isReplying) return;
+    if (!currentChat) return;
+    
+    if (currentChat.type === 'channel') {
+        const snapshot = await db.ref(`channels/${currentChat.id}`).once("value");
+        const channel = snapshot.val();
+        const isGroup = channel && channel.type === 'group';
+        if (!channel || (!isGroup && channel.createdBy !== currentUser.uid)) {
+            showNotification(isGroup ? "Вы не можете писать в этой группе" : "Только создатель может писать", "error");
+            return;
+        }
+    }
+    
+    const msgObj = {
+        text: messageText,
+        senderId: currentUser.uid,
+        senderName: currentUser.nickname,
+        senderAvatar: currentUser.avatar,
+        timestamp: Date.now(),
+        read: false
+    };
+    
+    if (isReplying && messageToReply) {
+        msgObj.replyTo = messageToReply.timestamp;
+        msgObj.replyToText = messageToReply.text || (messageToReply.imageUrl ? '📷 Фото' : (messageToReply.audioUrl ? '🎤 Голосовое' : 'Сообщение'));
+        msgObj.replyToSenderName = messageToReply.senderName;
+    }
+    
+    try {
+        if (currentChat.type === 'friend') {
+            const chatId = getChatId(currentUser.uid, currentChat.id);
+            await db.ref("messages/" + chatId).push(msgObj);
+        } else if (currentChat.type === 'channel') {
+            await db.ref("channelMessages/" + currentChat.id).push(msgObj);
+        }
+        
+        messageInput.value = "";
+        resizeTextarea();
+        
+        // Если был ответ, отменяем его и восстанавливаем интерфейс
+        if (isReplying) {
+            cancelReply();
+        }
+        
+        // Восстанавливаем обычный вид после отправки
+        restoreMessageInput();
+        
+    } catch (error) {
+        console.error("Error sending message:", error);
+        showNotification("Ошибка отправки", "error");
+    }
+}
+
+// Обработчик фокуса на поле ввода
+messageInput.addEventListener('focus', () => {
+    if (isEditing || isReplying) {
+        setTimeout(expandMessageInput, 300);
+    }
+});
+
+// Обработчик потери фокуса
+messageInput.addEventListener('blur', () => {
+    // Не восстанавливаем сразу, так как пользователь может переключиться на другое поле
+    // Восстановление произойдет при cancelReply/cancelEdit или при скрытии клавиатуры
+});
+
+// Дополнительная функция для принудительного скрытия клавиатуры
+function hideKeyboard() {
+    messageInput.blur();
+    restoreMessageInput();
+}
+
+// Добавьте обработчик свайпа вниз для скрытия клавиатуры
+let touchStartY = 0;
+let touchEndY = 0;
+
+document.addEventListener('touchstart', (e) => {
+    touchStartY = e.touches[0].clientY;
+}, { passive: true });
+
+document.addEventListener('touchend', (e) => {
+    if (!isEditing && !isReplying) return;
+    
+    touchEndY = e.changedTouches[0].clientY;
+    const swipeDistance = touchEndY - touchStartY;
+    
+    // Свайп вниз для скрытия клавиатуры
+    if (swipeDistance > 50) {
+        hideKeyboard();
+    }
+}, { passive: true });
+
+// Адаптивный CSS (добавьте в стили)
+const style = document.createElement('style');
+style.textContent = `
+    /* Анимации для поля ввода */
+    .message-input-container {
+        transition: bottom 0.3s ease, box-shadow 0.3s ease;
+    }
+    
+    /* Затемнение фона при редактировании */
+    .main-content.editing-mode {
+        opacity: 0.7;
+        transition: opacity 0.3s ease;
+    }
+    
+    /* Подсветка поля при редактировании */
+    .message-input-container.editing {
+        border-top: 2px solid var(--primary);
+        box-shadow: 0 -4px 20px rgba(108, 99, 255, 0.3);
+    }
+    
+    /* Анимация для контейнеров ответа/редактирования */
+    .reply-container, .edit-container {
+        transform-origin: bottom;
+        animation: slideUp 0.3s ease;
+    }
+    
+    @keyframes slideUp {
+        from {
+            opacity: 0;
+            transform: translateY(20px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    
+    /* Затемнение при фокусе */
+    .message-input:focus {
+        background: var(--bg-tertiary);
+    }
+    
+    /* Индикатор редактирования */
+    .editing-indicator {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        background: var(--primary);
+        color: white;
+        text-align: center;
+        padding: 4px;
+        font-size: 12px;
+        z-index: 1001;
+        animation: slideDown 0.3s ease;
+    }
+    
+    @keyframes slideDown {
+        from {
+            transform: translateY(-100%);
+        }
+        to {
+            transform: translateY(0);
+        }
+    }
+`;
+document.head.appendChild(style);
+
+// Добавьте индикатор режима редактирования
+function showEditingIndicator(text) {
+    const existingIndicator = document.querySelector('.editing-indicator');
+    if (existingIndicator) existingIndicator.remove();
+    
+    const indicator = document.createElement('div');
+    indicator.className = 'editing-indicator';
+    indicator.textContent = text;
+    document.body.appendChild(indicator);
+    
+    setTimeout(() => {
+        if (indicator.parentNode) {
+            indicator.remove();
+        }
+    }, 2000);
+}
+
+// Модифицируйте функции для показа индикатора
+const originalEditMessage = editMessage;
+editMessage = function() {
+    originalEditMessage();
+    showEditingIndicator('Редактирование сообщения');
+};
+
+const originalReplyToMessage = replyToMessage;
+replyToMessage = function() {
+    originalReplyToMessage();
+    showEditingIndicator('Ответ на сообщение');
+};
 
 // ========== UTILITY FUNCTIONS ==========
 function sanitize(str) {
