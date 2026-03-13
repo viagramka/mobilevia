@@ -924,59 +924,44 @@ function addGoogleLinkButtonToProfile() {
 // Инициализация
 addGoogleLinkButtonToProfile();
 
-// Обновляем функцию auth.onAuthStateChanged
-const originalAuthStateChanged = auth.onAuthStateChanged;
-auth.onAuthStateChanged = async function(user) {
-    if (user) {
-        const snap = await db.ref("users/" + user.uid).once("value");
-        const data = snap.val() || {};
-        
-        // Проверяем, есть ли привязанные аккаунты
-        const linkedAccounts = data.linkedAccounts || {};
-        
-        currentUser = {
-            uid: user.uid,
-            email: user.email,
-            nickname: data.nickname || "Пользователь",
-            avatar: data.avatar || DEFAULT_AVATAR,
-            description: data.description || "Привет! я использую Viagram!",
-            linkedAccounts: linkedAccounts
-        };
-        
-        const blocked = await db.ref(`blockedUsers/${currentUser.uid}`).once("value");
-        blockedUsers = blocked.val() || {};
-        
-        userAvatar.src = currentUser.avatar;
-        updateOnlineStatus(currentUser.uid, true);
-        
-        window.addEventListener("beforeunload", () => updateOnlineStatus(currentUser.uid, false));
-        
-        await loadUserSettings(currentUser.uid);
-        loadFriends();
-        loadChannels();
-        
-        hideModal(authModal);
-        hideModal(registerModal);
-        
-        if (chatIdFromUrl) {
-            await openChatFromUrl(chatIdFromUrl);
+
+
+auth.onAuthStateChanged(async (user) => {
+        if (user) {
+            const snap = await db.ref("users/" + user.uid).once("value");
+            const data = snap.val() || {};
+            currentUser = {
+                uid: user.uid,
+                email: user.email,
+                nickname: data.nickname || "Пользователь",
+                avatar: data.avatar || DEFAULT_AVATAR,
+                description: data.description || "Привет! я использую Viagram!"
+            };
+            const blocked = await db.ref(`blockedUsers/${currentUser.uid}`).once("value");
+            blockedUsers = blocked.val() || {};
+            userAvatar.src = currentUser.avatar;
+            updateOnlineStatus(currentUser.uid, true);
+            window.addEventListener("beforeunload", () => updateOnlineStatus(currentUser.uid, false));
+            await loadUserSettings(currentUser.uid);
+            loadFriends();
+            loadChannels();
+            hideModal(authModal);
+            hideModal(registerModal);
+            if (chatIdFromUrl) {
+                await openChatFromUrl(chatIdFromUrl);
+            }
+        } else {
+            currentUser = null;
+            blockedUsers = {};
+            userAvatar.src = DEFAULT_AVATAR;
+            friendsList.innerHTML = '';
+            channelsList.innerHTML = '';
+            chatMessages.innerHTML = '';
+            chatName.textContent = "Выберите чат";
+            chatAvatar.src = '';
+            showModal(authModal);
         }
-        
-        // Обновляем UI привязанных аккаунтов
-        updateLinkedAccountsUI();
-        
-    } else {
-        currentUser = null;
-        blockedUsers = {};
-        userAvatar.src = DEFAULT_AVATAR;
-        friendsList.innerHTML = '';
-        channelsList.innerHTML = '';
-        chatMessages.innerHTML = '';
-        chatName.textContent = "Выберите чат";
-        chatAvatar.src = '';
-        showModal(authModal);
-    }
-};
+    });
 
 
     // ========== UTILITY FUNCTIONS ==========
