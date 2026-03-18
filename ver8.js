@@ -626,7 +626,7 @@ async function updateLinkedAccountsUI() {
 // Улучшенная функция входа через Google
 async function signInWithGoogle(isRegistration = false) {
     try {
-        const result = await auth.signInWithPopup(provider);
+        const result = await auth.signInWithRedirect(provider);
         const user = result.user;
         
         // Проверяем, существует ли пользователь в базе
