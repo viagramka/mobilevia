@@ -662,83 +662,29 @@ async function updateLinkedAccountsUI() {
     }
 }
 
-// Улучшенная функция входа через Google
 async function signInWithGoogle(isRegistration = false) {
     try {
-        // Настраиваем провайдер с правильными параметрами
+        // Настраиваем провайдера
         provider.setCustomParameters({
             prompt: 'select_account'
         });
         
-        const result = await auth.signInWithRedirect(provider);
-        const user = result.user;
+        // Используем signInWithRedirect вместо popup
+        await auth.signInWithRedirect(provider);
         
-        console.log("Успешный вход через Google:", user.email);
-        
-        
-        const snap = await db.ref("users/" + user.uid).once("value");
-        
-        if (!snap.exists()) {
-            // регистрация в случае отсутствия акка
-            const displayName = getRandomUsername();
-            const photoURL = user.photoURL || DEFAULT_AVATAR;
-            
-            await db.ref("users/" + user.uid).set({
-                nickname: displayName,
-                avatar: photoURL,
-                description: "Привет! я использую Виаграмка!",
-                online: true,
-                email: user.email,
-                authMethod: 'google',
-                createdAt: Date.now()
-            });
-            
-            showNotification("Профиль успешно создан!", "success");
-        } else {
-            // Существующий пользователь - обновляем информацию
-            await db.ref(`users/${user.uid}`).update({
-                online: true,
-                lastLogin: Date.now()
-            });
-        }
-        
+        // Сохраняем флаг, что это регистрация
         if (isRegistration) {
-            hideModal(registerModal);
-        } else {
-            hideModal(authModal);
+            localStorage.setItem('googleSignUpMode', 'true');
         }
-        
-        showNotification("Успешный вход через Google!", "success");
         
     } catch (error) {
-        console.error("Ошибка входа через Google:", error);
+        console.error("Ошибка при редиректе Google:", error);
         
         let errorMessage = "Ошибка входа через Google";
-        
-        switch (error.code) {
-            case 'auth/popup-closed-by-user':
-                errorMessage = "Окно авторизации было закрыто";
-                break;
-            case 'auth/popup-blocked':
-                errorMessage = "Всплывающее окно заблокировано. Разрешите всплывающие окна";
-                break;
-            case 'auth/cancelled-popup-request':
-                errorMessage = "Запрос авторизации отменен";
-                break;
-            case 'auth/account-exists-with-different-credential':
-                errorMessage = "Аккаунт уже существует с другим методом входа";
-                break;
-            case 'auth/auth-domain-config-required':
-                errorMessage = "Ошибка конфигурации домена";
-                break;
-            case 'auth/operation-not-allowed':
-                errorMessage = "Вход через Google не активирован в консоли Firebase";
-                break;
-            case 'auth/unauthorized-domain':
-                errorMessage = "Домен не авторизован в Firebase";
-                break;
-            default:
-                errorMessage = error.message;
+        if (error.code === 'auth/popup-blocked') {
+            errorMessage = "Всплывающее окно заблокировано. Разрешите всплывающие окна";
+        } else if (error.code === 'auth/unauthorized-domain') {
+            errorMessage = "Домен не авторизован в Firebase";
         }
         
         if (isRegistration) {
@@ -747,10 +693,16 @@ async function signInWithGoogle(isRegistration = false) {
             authError.textContent = errorMessage;
         }
         
-        showNotification(`Ошибка: ${errorMessage}`, "error");
+        showNotification(errorMessage, "error");
     }
 }
+googleLoginBtn.addEventListener('click', () => {
+    signInWithGoogle(false);
+});
 
+googleRegisterBtn.addEventListener('click', () => {
+    signInWithGoogle(true);
+});
 // Обновляем обработчики для кнопок Google
 document.addEventListener('DOMContentLoaded', function() {
     // Заменяем существующие обработчики
@@ -1276,53 +1228,110 @@ auth.onAuthStateChanged(async (user) => {
         showModal(authModal);
     }
 });
+// Обработка результата редиректа Google
 auth.getRedirectResult().then(async (result) => {
     if (result.user) {
+        console.log("Успешный вход через Google redirect:", result.user.email);
+        
         const user = result.user;
+        const isSignUp = localStorage.getItem('googleSignUpMode') === 'true';
+        
+        // Проверяем, существует ли пользователь
         const snap = await db.ref("users/" + user.uid).once("value");
         
         if (!snap.exists()) {
-            // Новый пользователь - создаем профиль
+            // Новый пользователь - регистрация
+            const displayName = user.displayName || getRandomUsername();
+            const photoURL = user.photoURL || DEFAULT_AVATAR;
+            
             await db.ref("users/" + user.uid).set({
-                nickname: user.displayName || "Пользователь",
-                avatar: user.photoURL || DEFAULT_AVATAR,
-                description: "Привет! я использую Viagram!",
-                online: true
+                nickname: displayName,
+                avatar: photoURL,
+                description: "Привет! я использую Виаграмка!",
+                online: true,
+                email: user.email,
+                authMethod: 'google',
+                createdAt: Date.now(),
+                linkedAccounts: {
+                    google: {
+                        email: user.email,
+                        displayName: user.displayName,
+                        photoURL: user.photoURL,
+                        linkedAt: Date.now()
+                    }
+                }
+            });
+            
+            showNotification("Профиль успешно создан!", "success");
+        } else {
+            // Существующий пользователь - обновляем данные
+            const data = snap.val();
+            await db.ref(`users/${user.uid}`).update({
+                online: true,
+                lastLogin: Date.now(),
+                avatar: user.photoURL || data.avatar,
+                'linkedAccounts/google': {
+                    email: user.email,
+                    displayName: user.displayName,
+                    photoURL: user.photoURL,
+                    linkedAt: Date.now()
+                }
             });
         }
         
-        // Показываем уведомление об успешном входе
-        showNotification("Добро пожаловать!", "success");
-        
-        // Закрываем модальные окна
-        hideModal(authModal);
-        hideModal(registerModal);
-        
-        // Обновляем данные пользователя
+        // Обновляем currentUser
         const userSnap = await db.ref("users/" + user.uid).once("value");
-        const data = userSnap.val() || {};
+        const userData = userSnap.val();
+        
         currentUser = {
             uid: user.uid,
             email: user.email,
-            nickname: data.nickname || "Пользователь",
-            avatar: data.avatar || DEFAULT_AVATAR,
-            description: data.description || "Привет! я использую Viagram!"
+            nickname: userData.nickname || user.displayName || "Пользователь",
+            avatar: userData.avatar || user.photoURL || DEFAULT_AVATAR,
+            description: userData.description || "Привет! я использую Виаграмка!"
         };
         
+        // Обновляем UI
         userAvatar.src = currentUser.avatar;
         updateOnlineStatus(currentUser.uid, true);
         await loadUserSettings(currentUser.uid);
         loadFriends();
         loadChannels();
         
-        // Перенаправляем на главную страницу (если нужно)
-        // window.location.href = '/';
+        // Закрываем модальные окна
+        hideModal(authModal);
+        hideModal(registerModal);
+        
+        // Очищаем флаг регистрации
+        localStorage.removeItem('googleSignUpMode');
+        
+        showNotification("Добро пожаловать!", "success");
+        
     }
 }).catch((error) => {
-    console.error("Ошибка входа через Google:", error);
-    showNotification("Ошибка входа: " + error.message, "error");
+    console.error("Ошибка при обработке редиректа Google:", error);
+    
+    // Обрабатываем конкретные ошибки
+    let errorMessage = "Ошибка входа";
+    switch (error.code) {
+        case 'auth/account-exists-with-different-credential':
+            errorMessage = "Аккаунт уже существует с другим методом входа";
+            break;
+        case 'auth/auth-domain-config-required':
+            errorMessage = "Ошибка конфигурации домена";
+            break;
+        case 'auth/operation-not-allowed':
+            errorMessage = "Вход через Google не активирован в консоли Firebase";
+            break;
+        case 'auth/unauthorized-domain':
+            errorMessage = "Домен не авторизован в Firebase";
+            break;
+        default:
+            errorMessage = error.message;
+    }
+    
+    showNotification(errorMessage, "error");
 });
-
     // ========== UTILITY FUNCTIONS ==========
     function sanitize(str) {
         if (!str) return "";
@@ -5388,21 +5397,15 @@ function init() {
     if (savedTheme) { currentTheme = savedTheme; themeToggle.checked = currentTheme === 'light'; applyTheme(currentTheme); }
     if (savedColor) { currentColorTheme = savedColor; applyColorTheme(currentColorTheme); }
     
-    // Слушатель для обновления статуса комментариев при изменении канала
-    if (currentChat && currentChat.type === 'channel') {
-        db.ref(`channels/${currentChat.id}/verified`).on('value', (snap) => {
-            if (currentChat) {
-                const isVerified = snap.val() === 1 || snap.val() === 2;
-                currentChat.isVerified = isVerified;
-                updateChannelCommentsStatus(currentChat.id);
-            }
-        });
-    }
-    
     setTimeout(() => {
-        initEmojiPicker();
+        showSubscriptions();
         showChannels();
     }, 100);
+    
+    // Обработка редиректа при загрузке страницы
+    auth.getRedirectResult().catch((error) => {
+        console.error("Ошибка при редиректе:", error);
+    });
 }
 // ========== PWA FUNCTIONS ==========
 
