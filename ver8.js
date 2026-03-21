@@ -26,21 +26,42 @@ const CLOUDINARY_CONFIG = {
  * @param {File} file - файл изображения
  * @returns {Promise<string>} - публичный URL изображения
  */
-function uploadToCloudinary(file) {
+function uploadToCloudinary(file, resourceType = 'auto') {
   return new Promise((resolve, reject) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('upload_preset', CLOUDINARY_CONFIG.uploadPreset);
-    formData.append('folder', 'viagramka'); // опционально
+    formData.append('folder', 'viagramka/voice'); // отдельная папка для голосовых
+    
+    // Определяем тип ресурса для Cloudinary
+    let cloudinaryResourceType = 'auto';
+    if (file.type.startsWith('audio/')) {
+      cloudinaryResourceType = 'video'; // Cloudinary обрабатывает аудио как video
+    } else if (file.type.startsWith('image/')) {
+      cloudinaryResourceType = 'image';
+    } else if (file.type.startsWith('video/')) {
+      cloudinaryResourceType = 'video';
+    }
 
-    fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/image/upload`, {
+    fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/${cloudinaryResourceType}/upload`, {
       method: 'POST',
       body: formData
     })
       .then(response => response.json())
       .then(data => {
         if (data.secure_url) {
-          resolve(data.secure_url); // возвращаем HTTPS ссылку
+          // Для аудио файлов возвращаем URL с дополнительной информацией
+          if (file.type.startsWith('audio/')) {
+            resolve({
+              url: data.secure_url,
+              duration: data.duration || 0,
+              format: data.format,
+              bytes: data.bytes,
+              publicId: data.public_id
+            });
+          } else {
+            resolve(data.secure_url);
+          }
         } else {
           reject(data.error?.message || 'Ошибка загрузки на Cloudinary');
         }
@@ -68,12 +89,21 @@ let channelsLastUpdate = 0;
 	let emojiPickerVisible = false;
     let recentEmojis = [];
     let isEditing = false;
+	const emailLinkActionCodeSettings = {
+    // URL должен быть разрешен в консоли Firebase
+    url: window.location.origin + '/',  // Добавляем слеш в конце
+    handleCodeInApp: true, // Важно! Должно быть true
+    // iOS: { bundleId: 'com.example.ios' }, // Опционально для iOS
+    // android: { packageName: 'com.example.android', installApp: true, minimumVersion: '12' } // Опционально для Android
+};
     let autoCorrectEnabled = true;
     let blurTimeout;
     let currentTheme = 'dark';
 	let emptyMessage = false;
     let currentColorTheme = 'purple';
     let blockedUsers = {};
+	let previewAudio = null;
+
     let isChannelsMode = true;
     let showSubscribedOnly = false;
     
@@ -87,14 +117,21 @@ let channelsLastUpdate = 0;
         voicePermissions: 'all'
     };
     let audioRecorder = null;
-    let audioChunks = [];
+
 	let videoRecorder = null;
     let videoChunks = [];
     let isRecordingVideo = false;
     const MAX_VIDEO_SIZE = 50 * 1024 * 1024; // 50MB максимальный размер видео
     let isRecording = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingStartTime = null;
+let recordingTimer = null;
+let recordingStream = null;
 
-    // NEW: Variables for comments
+let audioContext = null;
+let audioAnalyser = null;
+ 
     let currentCommentMessage = null;           // сообщение (пост), к которому пишут комментарии
     let replyToComment = null;                  // комментарий, на который отвечаем
     let currentCommentsListener = null;          // для отслеживания комментариев в реальном времени
@@ -120,6 +157,8 @@ const emojiCategories = {
     const registerError = document.getElementById('registerError');
     const email = document.getElementById('email');
     const password = document.getElementById('password');
+	
+
     const sendSound = document.getElementById('sendSound');
     const receiveSound = document.getElementById('receiveSound');
     const regNickname = document.getElementById('regNickname');
@@ -626,51 +665,41 @@ async function updateLinkedAccountsUI() {
 // Улучшенная функция входа через Google
 async function signInWithGoogle(isRegistration = false) {
     try {
-        const result = await auth.signInWithRedirect(provider);
+        // Настраиваем провайдер с правильными параметрами
+        provider.setCustomParameters({
+            prompt: 'select_account'
+        });
+        
+        const result = await auth.signInWithPopup(provider);
         const user = result.user;
         
-        // Проверяем, существует ли пользователь в базе
+        console.log("Успешный вход через Google:", user.email);
+        
+        
         const snap = await db.ref("users/" + user.uid).once("value");
         
         if (!snap.exists()) {
-            // Новый пользователь - создаем запись
-            const googleProviderData = user.providerData.find(
-                p => p.providerId === 'google.com'
-            );
+            // регистрация в случае отсутствия акка
+            const displayName = getRandomUsername();
+            const photoURL = user.photoURL || DEFAULT_AVATAR;
             
             await db.ref("users/" + user.uid).set({
-                nickname: user.displayName || "Пользователь",
-                avatar: user.photoURL || DEFAULT_AVATAR,
-                description: "Привет! я использую Viagram!",
+                nickname: displayName,
+                avatar: photoURL,
+                description: "Привет! я использую Виаграмка!",
                 online: true,
-                linkedAccounts: {
-                    google: {
-                        email: googleProviderData?.email || user.email,
-                        displayName: googleProviderData?.displayName || user.displayName,
-                        photoURL: googleProviderData?.photoURL || user.photoURL,
-                        linkedAt: Date.now(),
-                        uid: googleProviderData?.uid || user.uid
-                    }
-                }
+                email: user.email,
+                authMethod: 'google',
+                createdAt: Date.now()
             });
+            
+            showNotification("Профиль успешно создан!", "success");
         } else {
-            // Существующий пользователь - обновляем информацию о привязке
-            const googleProviderData = user.providerData.find(
-                p => p.providerId === 'google.com'
-            );
-            
-            await db.ref(`users/${user.uid}/linkedAccounts`).update({
-                google: {
-                    email: googleProviderData?.email || user.email,
-                    displayName: googleProviderData?.displayName || user.displayName,
-                    photoURL: googleProviderData?.photoURL || user.photoURL,
-                    linkedAt: Date.now(),
-                    uid: googleProviderData?.uid || user.uid
-                }
+            // Существующий пользователь - обновляем информацию
+            await db.ref(`users/${user.uid}`).update({
+                online: true,
+                lastLogin: Date.now()
             });
-            
-            // Проверяем и обновляем профиль
-            await checkAndUpdateProfileFromGoogle(googleProviderData);
         }
         
         if (isRegistration) {
@@ -691,10 +720,22 @@ async function signInWithGoogle(isRegistration = false) {
                 errorMessage = "Окно авторизации было закрыто";
                 break;
             case 'auth/popup-blocked':
-                errorMessage = "Всплывающее окно заблокировано браузером";
+                errorMessage = "Всплывающее окно заблокировано. Разрешите всплывающие окна";
                 break;
             case 'auth/cancelled-popup-request':
                 errorMessage = "Запрос авторизации отменен";
+                break;
+            case 'auth/account-exists-with-different-credential':
+                errorMessage = "Аккаунт уже существует с другим методом входа";
+                break;
+            case 'auth/auth-domain-config-required':
+                errorMessage = "Ошибка конфигурации домена";
+                break;
+            case 'auth/operation-not-allowed':
+                errorMessage = "Вход через Google не активирован в консоли Firebase";
+                break;
+            case 'auth/unauthorized-domain':
+                errorMessage = "Домен не авторизован в Firebase";
                 break;
             default:
                 errorMessage = error.message;
@@ -1122,16 +1163,29 @@ async function signInWithGoogle(isRegistration = false) {
 
 // Обновляем обработчики для кнопок Google
 document.addEventListener('DOMContentLoaded', function() {
-    // Заменяем существующие обработчики
     const googleLoginBtn = document.getElementById('googleLoginBtn');
     const googleRegisterBtn = document.getElementById('googleRegisterBtn');
     
     if (googleLoginBtn) {
-        googleLoginBtn.onclick = () => signInWithGoogle(false);
+        
+        googleLoginBtn.replaceWith(googleLoginBtn.cloneNode(true));
+        const newGoogleLoginBtn = document.getElementById('googleLoginBtn');
+        
+        newGoogleLoginBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            signInWithGoogle(false);
+        });
     }
     
     if (googleRegisterBtn) {
-        googleRegisterBtn.onclick = () => signInWithGoogle(true);
+        // Удаляем все старые обработчики
+        googleRegisterBtn.replaceWith(googleRegisterBtn.cloneNode(true));
+        const newGoogleRegisterBtn = document.getElementById('googleRegisterBtn');
+        
+        newGoogleRegisterBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            signInWithGoogle(true);
+        });
     }
 });
 
@@ -1160,42 +1214,68 @@ addGoogleLinkButtonToProfile();
 
 
 auth.onAuthStateChanged(async (user) => {
-        if (user) {
-			
-            const snap = await db.ref("users/" + user.uid).once("value");
-            const data = snap.val() || {};
-            currentUser = {
-                uid: user.uid,
+    if (user) {
+        console.log("Пользователь вошел:", user.email);
+        
+        const snap = await db.ref("users/" + user.uid).once("value");
+        let data = snap.val();
+        
+        if (!data) {
+            
+            data = {
+                nickname: user.displayName || user.email?.split('@')[0] || "Пользователь",
+                avatar: user.photoURL || DEFAULT_AVATAR,
+                description: "Привет! я использую Виаграмка!",
+                online: true,
                 email: user.email,
-                nickname: data.nickname || "Пользователь",
-                avatar: data.avatar || DEFAULT_AVATAR,
-                description: data.description || "Привет! я использую Viagram!"
+                authMethod: user.providerData[0]?.providerId || 'unknown',
+                createdAt: Date.now()
             };
-            const blocked = await db.ref(`blockedUsers/${currentUser.uid}`).once("value");
-            blockedUsers = blocked.val() || {};
-            userAvatar.src = currentUser.avatar;
-            updateOnlineStatus(currentUser.uid, true);
-            window.addEventListener("beforeunload", () => updateOnlineStatus(currentUser.uid, false));
-            await loadUserSettings(currentUser.uid);
-            loadFriends();
-            loadChannels();
-            hideModal(authModal);
-            hideModal(registerModal);
-            if (chatIdFromUrl) {
-                await openChatFromUrl(chatIdFromUrl);
-            }
-        } else {
-            currentUser = null;
-            blockedUsers = {};
-            userAvatar.src = DEFAULT_AVATAR;
-            friendsList.innerHTML = '';
-            channelsList.innerHTML = '';
-            chatMessages.innerHTML = '';
-            chatName.textContent = "Выберите чат";
-            chatAvatar.src = '';
-            showModal(authModal);
+            
+            await db.ref("users/" + user.uid).set(data);
+            console.log("Профиль создан для существующего пользователя Auth");
         }
-    });
+        
+        currentUser = {
+            uid: user.uid,
+            email: user.email,
+            nickname: data.nickname || "Пользователь",
+            avatar: data.avatar || DEFAULT_AVATAR,
+            description: data.description || "Привет! я использую Виаграмка!"
+        };
+        
+        const blocked = await db.ref(`blockedUsers/${currentUser.uid}`).once("value");
+        blockedUsers = blocked.val() || {};
+        
+        userAvatar.src = currentUser.avatar;
+        updateOnlineStatus(currentUser.uid, true);
+        
+        window.addEventListener("beforeunload", () => updateOnlineStatus(currentUser.uid, false));
+        
+        await loadUserSettings(currentUser.uid);
+        loadFriends();
+        loadChannels();
+        
+        hideModal(authModal);
+        hideModal(registerModal);
+        
+        if (chatIdFromUrl) {
+            await openChatFromUrl(chatIdFromUrl);
+        }
+        
+    } else {
+        console.log("Пользователь вышел");
+        currentUser = null;
+        blockedUsers = {};
+        userAvatar.src = DEFAULT_AVATAR;
+        friendsList.innerHTML = '';
+        channelsList.innerHTML = '';
+        chatMessages.innerHTML = '';
+        chatName.textContent = "Выберите чат";
+        chatAvatar.src = '';
+        showModal(authModal);
+    }
+});
 
 
     // ========== UTILITY FUNCTIONS ==========
@@ -2084,14 +2164,23 @@ function appendMessage(msg, firebaseKey = null) {
                 </video>
             </div>`;
     }
-    if (msg.audioUrl) {
-        content += `
-            <div class="voice-message" onclick="playAudioMessage('${msg.audioUrl}', this)">
-                <button class="play-btn"><svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg></button>
-                <div class="progress-bar"><div class="progress"></div></div>
-                <div class="duration">${Math.floor(msg.duration || 0)}s</div>
-            </div>`;
-    }
+    
+if (msg.audioUrl) {
+   
+    const isCloudinary = msg.cloudinary || msg.audioUrl.includes('cloudinary');
+    const audioIcon = isCloudinary ? 
+        '<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="white"><path d="m400-400 240-160-240-160v320ZM80-80v-720q0-33 23.5-56.5T160-880h640q33 0 56.5 23.5T880-800v480q0 33-23.5 56.5T800-240H240L80-80Zm126-240h594v-480H160v525l46-45Zm-46 0v-480 480Z"/></svg>' :
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+    
+    content += `
+        <div class="voice-message" onclick="hideContextMenu(); playCloudinaryAudio(this, '${msg.audioUrl}', ${msg.duration || 0})">
+            <button class="play-btn">${audioIcon}</button>
+            <div class="progress-bar"><div class="progress" style="width:0%"></div></div>
+            <div class="duration" style="display: none;">s</div>
+            
+        </div>
+    `;
+}
 
     // Реакции (только для каналов)
     let reactionsHtml = '';
@@ -2113,21 +2202,30 @@ function appendMessage(msg, firebaseKey = null) {
         reactionsHtml += '</div>';
     }
 
-    // Комментарии для каналов
     let commentsHtml = '';
-    if (currentChat && currentChat.type === 'channel') {
-        const commentCount = msg.commentCount || 0;
-        commentsHtml = `
-            <div style="display: flex; align-items: center; margin-top: 6px;">
-                <button class="message-comment-btn" style="display: none;" onclick="showComments('${firebaseKey}')">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M21 6h-2v2h-2V6h-2V4h2V2h2v2h2v2zm-6-4v2h-2V2h2zm0 8h-2v2h2v-2zm-4-4H9v2h2V6zm0 8H9v2h2v-2zm-4-4H5v2h2v-2zm12 4h-2v-2h-2v2h2v2h-2v2h2v-2h2v-2zM4 4h8v2H4v12h12v-6h2v8H2V4h2z"/>
-                    </svg>
-                    <span class="message-comment-count">${commentCount}</span>
-                </button>
-            </div>
-        `;
-    }
+if (currentChat && currentChat.type === 'channel' && currentChat.isVerified) {
+    const commentCount = msg.commentCount || 0;
+    commentsHtml = `
+        <div style="display: none; align-items: center; margin-top: 6px;">
+            <button class="message-comment-btn" onclick="showComments('${firebaseKey}')">
+               <svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#e3e3e3"><path d="M240-400h480v-80H240v80Zm0-120h480v-80H240v80Zm0-120h480v-80H240v80ZM880-80 720-240H160q-33 0-56.5-23.5T80-320v-480q0-33 23.5-56.5T160-880h640q33 0 56.5 23.5T880-800v720ZM160-320h594l46 45v-525H160v480Zm0 0v-480 480Z"/></svg>
+                <span class="message-comment-count">${commentCount}</span>
+            </button>
+        </div>
+    `;
+} else if (currentChat && currentChat.type === 'channel' && !currentChat.isVerified) {
+    // Для неверифицированных каналов показываем только иконку-заглушку
+    commentsHtml = `
+        <div style="display: none; align-items: center; margin-top: 6px;">
+            <button class="message-comment-btn" disabled style="opacity: 0.5; cursor: not-allowed;" title="Комментарии доступны только для верифицированных каналов">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M21 6h-2v2h-2V6h-2V4h2V2h2v2h2v2zm-6-4v2h-2V2h2zm0 8h-2v2h2v-2zm-4-4H9v2h2V6zm0 8H9v2h2v-2zm-4-4H5v2h2v-2zm12 4h-2v-2h-2v2h2v2h-2v2h2v-2h2v-2zM4 4h8v2H4v12h12v-6h2v8H2V4h2z"/>
+                </svg>
+                <span class="message-comment-count">🔒</span>
+            </button>
+        </div>
+    `;
+}
 
     let timeHtml = msg.edited 
         ? `<div class="message-time"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg> ред. ${formatTime(msg.timestamp)}</div>`
@@ -2151,14 +2249,17 @@ function appendMessage(msg, firebaseKey = null) {
         </div>
     `;
 
-    // Меняем contextmenu на click
     div.addEventListener('click', (e) => {
-        // Не открываем меню, если клик был по кнопке или ссылке
+    
         if (e.target.tagName === 'BUTTON' || 
-            e.target.tagName === 'IMG' || 
+            e.target.tagName === 'svg' ||
+            e.target.tagName === 'path' ||
+            e.target.closest('.play-btn') ||
             e.target.closest('.reaction-btn') ||
             e.target.closest('.message-comment-btn') ||
-            e.target.closest('.reply-preview')) {
+            e.target.closest('.reply-preview') ||
+            e.target.closest('.voice-message') ||
+            e.target.closest('.voice-play-btn')) {
             return;
         }
         e.preventDefault();
@@ -2168,7 +2269,35 @@ function appendMessage(msg, firebaseKey = null) {
     chatMessages.appendChild(div);
     scrollToBottom();
 }
+function canChannelHaveComments(channelId) {
+    return new Promise((resolve) => {
+        db.ref(`channels/${channelId}/verified`).once('value').then(snap => {
+            const verified = snap.val();
+            resolve(verified === 1 || verified === 2);
+        }).catch(() => resolve(false));
+    });
+}
 
+async function updateChannelCommentsStatus(channelId) {
+    const canComment = await canChannelHaveComments(channelId);
+    
+    // Обновляем отображение кнопок комментариев
+    document.querySelectorAll('.message-comment-btn').forEach(btn => {
+        if (!canComment) {
+            
+            btn.style.opacity = '0.5';
+			btn.style.display = 'none';
+            btn.style.cursor = 'not-allowed';
+			btn.onclick = "showNotification('У канала нету верификации для комментариев. Для получения обращайтесь к Support', 'warning');";
+            btn.title = 'Комментарии доступны только для верифицированных каналов';
+        } else {
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.style.cursor = 'pointer';
+            btn.title = '';
+        }
+    });
+}
 function showEmptyChatMessage() {
     emptyMessage = true;
     const existingEmpty = document.querySelector('.empty-chat-message');
@@ -2642,10 +2771,55 @@ function hideContextMenu() {
             messageInput.style.display = 'none';
             sendBtn.style.display = 'none';
             attachBtn.style.display = 'none';
+			 voiceMessageBtn.style.display = 'none';
 			emptyMessage = false;
             currentChatRef = db.ref("channelMessages/" + id);
             document.getElementById("formatToolbar").style.display = 'none';
-
+db.ref("channels/" + id).once("value").then(snap => {
+        const channel = snap.val();
+        if (!channel) return;
+        
+        const isGroup = channel.type === 'group';
+        const isCreator = channel.createdBy === currentUser.uid;
+        const isMember = channel.members && channel.members[currentUser.uid];
+        
+        // СОХРАНЯЕМ ИНФОРМАЦИЮ О ВЕРИФИКАЦИИ КАНАЛА
+        currentChat.isVerified = channel.verified === 1 || channel.verified === 2;
+        currentChat.isChannelOwner = isCreator;
+        
+        const subscribers = channel.members ? Object.keys(channel.members).length : 0;
+        chatStatus.textContent = `${subscribers} ${isGroup ? 'участников' : 'подписчиков'}`;
+        chatStatusDot.style.display = 'none';
+        
+        // ... остальной код ...
+        
+        // ПОКАЗЫВАЕМ ИЛИ СКРЫВАЕМ КОММЕНТАРИИ
+        if (!currentChat.isVerified && !isGroup) {
+            // Для неверифицированных каналов скрываем комментарии
+            const commentsInfo = document.createElement('div');
+            commentsInfo.className = 'channel-info-message';
+            commentsInfo.style.cssText = `
+                text-align: center;
+                padding: 12px;
+                margin: 8px 16px;
+                background: var(--surface);
+                border-radius: 12px;
+                border-left: 4px solid var(--warning);
+                font-size: 12px;
+            `;
+            commentsInfo.innerHTML = `
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="var(--warning)" style="vertical-align: middle; margin-right: 8px;">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+                </svg>
+                <span>Комментарии доступны только для верифицированных каналов с галочкой ✓</span>
+            `;
+            
+            const messageContainer = document.querySelector('.messages-container');
+            if (messageContainer) {
+                messageContainer.insertAdjacentElement('afterbegin', commentsInfo);
+            }
+        }
+    });
             currentChatRef.limitToLast(50000).once("value", snapshot => {
                  const loadingEl = document.getElementById('loading');
                  if (loadingEl) loadingEl.remove();
@@ -2708,6 +2882,7 @@ function hideContextMenu() {
                         messageInput.style.display = 'block';
                         sendBtn.style.display = 'flex';
                         attachBtn.style.display = 'flex';
+						 voiceMessageBtn.style.display = 'flex';
                         messageInput.disabled = false;
                         sendBtn.disabled = false;
                         messageInput.placeholder = isGroup ? "Введите сообщение..." : "Вы создатель канала";
@@ -3437,7 +3612,930 @@ function uploadCompressedImage(blob) {
             if (voiceMessageBtn) voiceMessageBtn.style.background = '';
         }
     }
+// Отправить голосовое сообщение через Cloudinary
+async function sendVoiceMessage(blob, duration) {
+    if (!currentChat || !currentUser) return;
+    
+    try {
+        showNotification('Загрузка голосового сообщения...', 'info');
+        
+        // Конвертируем blob в File объект
+        const fileName = `voice_${Date.now()}.webm`;
+        const audioFile = new File([blob], fileName, { type: 'audio/webm;codecs=opus' });
+        
+        // Загружаем на Cloudinary
+        const uploadResult = await uploadToCloudinary(audioFile, 'auto');
+        
+        let audioUrl, audioDuration, audioSize;
+        
+        // Проверяем формат ответа (может быть строкой или объектом)
+        if (typeof uploadResult === 'object') {
+            audioUrl = uploadResult.url;
+            audioDuration = uploadResult.duration || duration;
+            audioSize = uploadResult.bytes || blob.size;
+        } else {
+            audioUrl = uploadResult;
+            audioDuration = duration;
+            audioSize = blob.size;
+        }
+        console.log("duration: " + audioDuration);
+        // Создаем объект сообщения
+        const msgObj = {
+            audioUrl: audioUrl,
+            
+            senderId: currentUser.uid,
+            senderName: currentUser.nickname,
+            timestamp: Date.now(),
+            read: false,
+            audioFormat: 'webm',
+            audioSize: audioSize,
+            cloudinary: true // флаг, что файл на Cloudinary
+        };
+        
+        // Добавляем информацию о типе для каналов/групп
+        if (currentChat.type === 'channel') {
+            msgObj.mediaType = 'audio';
+        }
+        
+        // Сохраняем в Firebase
+        if (currentChat.type === 'friend') {
+            const chatId = getChatId(currentUser.uid, currentChat.id);
+            await db.ref("messages/" + chatId).push(msgObj);
+        } else if (currentChat.type === 'channel') {
+            await db.ref("channelMessages/" + currentChat.id).push(msgObj);
+        }
+        
+        showNotification('Голосовое сообщение отправлено', 'success');
+        
+    } catch (error) {
+        console.error('Ошибка отправки голосового сообщения:', error);
+        showNotification('Ошибка при загрузке: ' + (error.message || 'неизвестная ошибка'), 'error');
+    }
+}
+// Улучшенная функция воспроизведения голосовых сообщений с Cloudinary
+function playCloudinaryAudio(messageElement, audioUrl, duration) {
+    
+	const audio = new Audio(audioUrl);
+    const playBtn = messageElement.querySelector('.play-btn');
+    const progressBar = messageElement.querySelector('.progress');
+    const durationSpan = messageElement.querySelector('.duration');
+    
+    // Если уже играет, ставим на паузу
+    if (audioPlayer.src === audioUrl && !audioPlayer.paused) {
+        audioPlayer.pause();
+        if (playBtn) {
+            playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+        }
+        return;
+		hideContextMenu();
+    }
+    hideContextMenu();
+    // Останавливаем предыдущее воспроизведение
+    audioPlayer.pause();
+    audioPlayer.src = audioUrl;
+    
+    // Обновляем кнопку
+    if (playBtn) {
+        playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+    }
+    
+    
+    
+    // По окончании
+    audioPlayer.onended = () => {
+        if (playBtn) {
+            playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+        }
+        if (progressBar) {
+            progressBar.style.width = '0%';
+        }
+    };
+    
+    // Обработка ошибок
+    audioPlayer.onerror = (e) => {
+		hideContextMenu();
+        console.error('Ошибка воспроизведения:', e);
+        showNotification('Ошибка воспроизведения аудио', 'error');
+        if (playBtn) {
+            playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+        }
+    };
+    
+    // Запускаем воспроизведение
+    audioPlayer.play().catch(e => {
+		hideContextMenu();
+        console.error('Ошибка воспроизведения:', e);
+        showNotification('Не удалось воспроизвести аудио', 'error');
+    });
+	hideContextMenu();
+}
+function initVoiceMessages() {
+    if (!voiceMessageBtn) {
+        console.error("Кнопка голосовых сообщений не найдена");
+        return;
+    }
+    
+    console.log("Инициализация голосовых сообщений");
+    
+    // Обработчики для ПК (mouse)
+    voiceMessageBtn.addEventListener('mousedown', startVoiceRecording);
+    voiceMessageBtn.addEventListener('mouseup', stopVoiceRecording);
+    voiceMessageBtn.addEventListener('mouseleave', cancelVoiceRecording);
+    
+    // Обработчики для мобильных устройств (touch)
+    voiceMessageBtn.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        startVoiceRecording();
+    });
+    
+    voiceMessageBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        stopVoiceRecording();
+    });
+    
+    voiceMessageBtn.addEventListener('touchcancel', (e) => {
+        e.preventDefault();
+        cancelVoiceRecording();
+    });
+    
+    // Проверяем поддержку MediaRecorder
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+        console.warn("MediaRecorder не поддерживается");
+        voiceMessageBtn.style.display = 'none';
+    }
+}
 
+// Начать запись
+async function startVoiceRecording() {
+    if (!currentChat) {
+        showNotification('Выберите чат для записи', 'error');
+        return;
+    }
+    
+    if (isRecording) {
+        showNotification('Уже идет запись', 'warning');
+        return;
+    }
+    
+    // Проверяем поддержку
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showNotification('Ваш браузер не поддерживает запись аудио', 'error');
+        return;
+    }
+    
+    try {
+        console.log("Запрос доступа к микрофону...");
+        
+        // Запрашиваем доступ к микрофону
+        recordingStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                sampleRate: 44100,
+                channelCount: 1
+            } 
+        });
+        
+        console.log("Доступ к микрофону получен");
+        
+        // Проверяем поддержку формата
+        let mimeType = 'audio/webm;codecs=opus';
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'audio/webm';
+            if (!MediaRecorder.isTypeSupported(mimeType)) {
+                mimeType = '';
+            }
+        }
+        
+        const options = {
+            mimeType: mimeType,
+            audioBitsPerSecond: 32000
+        };
+        
+        mediaRecorder = new MediaRecorder(recordingStream, options);
+        audioChunks = [];
+        isRecording = true;
+        recordingStartTime = Date.now();
+        
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data && e.data.size > 0) {
+                audioChunks.push(e.data);
+                console.log(`Получен кусок аудио: ${e.data.size} байт`);
+            }
+        };
+        
+        mediaRecorder.onstop = async () => {
+            console.log(`Запись остановлена. Получено кусков: ${audioChunks.length}`);
+            
+            if (audioChunks.length > 0) {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
+                
+                console.log(`Создан blob размером: ${audioBlob.size} байт, длительность: ${duration}с`);
+                
+                // Минимальная длительность 1 секунда
+                if (duration >= 1 && audioBlob.size > 1000) {
+                    // Показываем предпрослушивание
+                    sendVoiceMessage(audioBlob, duration);
+                } else {
+                    showNotification('Слишком короткое сообщение', 'warning');
+                }
+            } else {
+                showNotification('Не удалось записать аудио', 'error');
+            }
+            
+            // Очищаем ресурсы
+            if (recordingStream) {
+                recordingStream.getTracks().forEach(track => {
+                    track.stop();
+                    console.log("Трек остановлен");
+                });
+            }
+            
+            if (audioContext) {
+                await audioContext.close();
+                audioContext = null;
+            }
+            
+            removeRecordingIndicator();
+            isRecording = false;
+        };
+        
+        // Запускаем запись с интервалом 100ms для получения данных
+        mediaRecorder.start(100);
+        console.log("Запись начата");
+        
+        // Запускаем визуализацию
+        setupAudioVisualization(recordingStream);
+        
+        // Показываем индикатор записи
+        showRecordingIndicator();
+        
+        // Запускаем таймер
+        startRecordingTimer();
+        
+        // Добавляем класс для анимации кнопки
+        voiceMessageBtn.classList.add('recording');
+        
+        showNotification('Запись начата', 'info');
+        
+    } catch (error) {
+        console.error('Ошибка доступа к микрофону:', error);
+        
+        let errorMessage = 'Нет доступа к микрофону';
+        if (error.name === 'NotAllowedError') {
+            errorMessage = 'Доступ к микрофону запрещен';
+        } else if (error.name === 'NotFoundError') {
+            errorMessage = 'Микрофон не найден';
+        }
+        
+        showNotification(errorMessage, 'error');
+        isRecording = false;
+    }
+}
+
+// Остановить запись
+function stopVoiceRecording() {
+    if (!isRecording || !mediaRecorder) {
+        console.log("Нет активной записи");
+        return;
+    }
+    
+    console.log("Остановка записи...");
+    
+    if (mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+    }
+    
+    voiceMessageBtn.classList.remove('recording');
+    stopRecordingTimer();
+}
+
+// Отменить запись
+function cancelVoiceRecording() {
+    if (!isRecording || !mediaRecorder) {
+        return;
+    }
+    
+    console.log("Отмена записи");
+    
+    if (mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        audioChunks = []; // Очищаем, чтобы не отправлять
+    }
+    
+    voiceMessageBtn.classList.remove('recording');
+    stopRecordingTimer();
+    removeRecordingIndicator();
+    isRecording = false;
+    
+    // Очищаем ресурсы
+    if (recordingStream) {
+        recordingStream.getTracks().forEach(track => track.stop());
+    }
+    
+    if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+    }
+    
+    showNotification('Запись отменена', 'info');
+}
+
+// Настройка визуализации
+function setupAudioVisualization(stream) {
+    try {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        audioAnalyser = audioContext.createAnalyser();
+        audioAnalyser.fftSize = 64;
+        
+        const source = audioContext.createMediaStreamSource(stream);
+        source.connect(audioAnalyser);
+        
+        const dataArray = new Uint8Array(audioAnalyser.frequencyBinCount);
+        
+        function updateWaveform() {
+            if (!isRecording) return;
+            
+            audioAnalyser.getByteFrequencyData(dataArray);
+            
+            // Используем первые 5 значений для визуализации
+            const values = Array.from(dataArray.slice(0, 5)).map(v => (v / 255) * 25 + 5);
+            
+            const waveform = document.querySelector('.recording-wave');
+            if (waveform) {
+                const spans = waveform.querySelectorAll('span');
+                values.forEach((val, i) => {
+                    if (spans[i]) {
+                        spans[i].style.height = val + 'px';
+                    }
+                });
+            }
+            
+            requestAnimationFrame(updateWaveform);
+        }
+        
+        updateWaveform();
+    } catch (e) {
+        console.error('Ошибка визуализации:', e);
+    }
+}
+
+// Показать индикатор записи
+function showRecordingIndicator() {
+    removeRecordingIndicator();
+    
+    const indicator = document.createElement('div');
+    indicator.className = 'recording-indicator';
+    indicator.innerHTML = `
+        <div class="recording-dot"></div>
+        <span class="recording-timer">00:00</span>
+        <div class="recording-wave">
+            <span></span><span></span><span></span><span></span><span></span>
+        </div>
+    `;
+    
+    document.body.appendChild(indicator);
+}
+
+// Удалить индикатор записи
+function removeRecordingIndicator() {
+    const indicator = document.querySelector('.recording-indicator');
+    if (indicator) {
+        indicator.remove();
+    }
+}
+
+// Запустить таймер
+function startRecordingTimer() {
+    if (recordingTimer) clearInterval(recordingTimer);
+    
+    recordingTimer = setInterval(() => {
+        if (!isRecording) {
+            clearInterval(recordingTimer);
+            return;
+        }
+        
+        const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+        const minutes = Math.floor(elapsed / 60);
+        const seconds = elapsed % 60;
+        const timeString = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        
+        const timer = document.querySelector('.recording-timer');
+        if (timer) {
+            timer.textContent = timeString;
+        }
+        
+        // Максимум 5 минут
+        if (elapsed >= 300) {
+            stopVoiceRecording();
+            showNotification('Достигнуто максимальное время записи', 'warning');
+        }
+    }, 100);
+}
+
+// Остановить таймер
+function stopRecordingTimer() {
+    if (recordingTimer) {
+        clearInterval(recordingTimer);
+        recordingTimer = null;
+    }
+}
+
+// Показать предпрослушивание
+function showVoicePreview(audioBlob, duration) {
+    const audioUrl = URL.createObjectURL(audioBlob);
+    
+    // Создаем модальное окно
+    const modal = document.createElement('div');
+    modal.className = 'voice-preview-modal';
+    modal.innerHTML = `
+        <div class="voice-preview-content">
+            <h3 class="voice-preview-title">Предпрослушивание</h3>
+            <div class="voice-preview-player">
+                <button class="voice-play-btn" id="previewPlayBtn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                </button>
+                <div class="voice-progress-bar" id="previewProgressBar">
+                    <div class="voice-progress-fill" id="previewProgressFill" style="width: 0%;"></div>
+                </div>
+                <span class="voice-time" id="previewTime">0:00 / ${Math.floor(duration / 60)}:${(duration % 60).toString().padStart(2, '0')}</span>
+            </div>
+            <div class="voice-preview-actions">
+                <button class="voice-preview-btn cancel" id="previewCancelBtn">Отмена</button>
+                <button class="voice-preview-btn send" id="previewSendBtn">Отправить</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    const audio = new Audio(audioUrl);
+    const playBtn = document.getElementById('previewPlayBtn');
+    const progressFill = document.getElementById('previewProgressFill');
+    const progressBar = document.getElementById('previewProgressBar');
+    const timeSpan = document.getElementById('previewTime');
+    
+    let isPlaying = false;
+    
+    playBtn.addEventListener('click', () => {
+        if (isPlaying) {
+            audio.pause();
+            playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+        } else {
+            audio.play();
+            playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+        }
+        isPlaying = !isPlaying;
+    });
+    
+    audio.ontimeupdate = () => {
+        const progress = (audio.currentTime / audio.duration) * 100;
+        progressFill.style.width = progress + '%';
+        
+        const currentMin = Math.floor(audio.currentTime / 60);
+        const currentSec = Math.floor(audio.currentTime % 60);
+        const totalMin = Math.floor(duration / 60);
+        const totalSec = duration % 60;
+        timeSpan.textContent = `${currentMin}:${currentSec.toString().padStart(2, '0')} / ${totalMin}:${totalSec.toString().padStart(2, '0')}`;
+    };
+    
+    audio.onended = () => {
+        playBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+        isPlaying = false;
+        progressFill.style.width = '0%';
+    };
+    
+    progressBar.addEventListener('click', (e) => {
+        const rect = progressBar.getBoundingClientRect();
+        const pos = (e.clientX - rect.left) / rect.width;
+        audio.currentTime = pos * audio.duration;
+    });
+    
+    document.getElementById('previewCancelBtn').addEventListener('click', () => {
+        audio.pause();
+        URL.revokeObjectURL(audioUrl);
+        modal.remove();
+    });
+    
+    document.getElementById('previewSendBtn').addEventListener('click', async () => {
+        audio.pause();
+        modal.remove();
+        await sendVoiceMessage(audioBlob, duration);
+        URL.revokeObjectURL(audioUrl);
+    });
+}
+
+// Отправить голосовое сообщение
+async function sendVoiceMessage(blob, duration) {
+    if (!currentChat || !currentUser) {
+        showNotification("Ошибка: чат не выбран", "error");
+        return;
+    }
+    
+    try {
+        showNotification('Загрузка голосового сообщения...', 'info');
+        
+        // Загружаем на Cloudinary
+        const audioFile = new File([blob], `voice_${Date.now()}.webm`, { type: 'audio/webm' });
+        const uploadResult = await uploadToCloudinary(audioFile, 'video'); // Аудио загружаем как video
+        
+        let audioUrl;
+        if (typeof uploadResult === 'object') {
+            audioUrl = uploadResult.url;
+        } else {
+            audioUrl = uploadResult;
+        }
+        
+        // Создаем объект сообщения
+        const msgObj = {
+            audioUrl: audioUrl,
+            senderId: currentUser.uid,
+            senderName: currentUser.nickname,
+            timestamp: Date.now(),
+            read: false,
+            audioFormat: 'webm',
+            audioSize: blob.size,
+            cloudinary: true
+        };
+        
+        // Отправляем в зависимости от типа чата
+        if (currentChat.type === 'friend') {
+            const chatId = getChatId(currentUser.uid, currentChat.id);
+            await db.ref("messages/" + chatId).push(msgObj);
+            console.log("Голосовое отправлено в личный чат");
+        } else if (currentChat.type === 'channel') {
+            // Проверяем, может ли пользователь писать в канал
+            const channelSnap = await db.ref(`channels/${currentChat.id}`).once("value");
+            const channel = channelSnap.val();
+            
+            if (channel.type === 'group' || channel.createdBy === currentUser.uid) {
+                msgObj.mediaType = 'audio';
+                await db.ref("channelMessages/" + currentChat.id).push(msgObj);
+                console.log("Голосовое отправлено в канал/группу");
+            } else {
+                showNotification("Вы не можете отправлять сообщения в этот канал", "error");
+                return;
+            }
+        }
+        
+        showNotification('Голосовое сообщение отправлено', 'success');
+        
+    } catch (error) {
+        console.error('Ошибка отправки голосового сообщения:', error);
+        showNotification('Ошибка при загрузке: ' + (error.message || 'неизвестная ошибка'), 'error');
+    }
+}
+
+// Обновленная функция appendMessage для отображения голосовых сообщений
+function appendVoiceMessage(msg) {
+    const duration = msg.duration || 0;
+    const minutes = Math.floor(duration / 60);
+    const seconds = duration % 60;
+    const durationStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    
+    return `
+        <div class="voice-message" data-audio-url="${msg.audioUrl}">
+            <button class="voice-play-btn" onclick="playVoiceMessage(this)">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="white">
+                    <path d="M8 5v14l11-7z"/>
+                </svg>
+            </button>
+            <div class="voice-progress-bar">
+                <div class="voice-progress-fill" style="width: 0%;"></div>
+            </div>
+            <span class="voice-duration">${durationStr}</span>
+            ${msg.cloudinary ? '<span style="font-size: 10px; opacity: 0.5;">☁️</span>' : ''}
+        </div>
+    `;
+}
+
+
+
+// Функция для показа сообщения об отправке ссылки
+function showEmailLinkSentMessage(email) {
+    const modalContent = document.querySelector('#authModal .modal-content');
+    
+   
+    
+    // Вставляем перед кнопками
+    const loginBtn = document.getElementById('loginBtn');
+    modalContent.insertBefore(messageDiv, loginBtn);
+    
+    // Удаляем через 10 секунд
+    setTimeout(() => {
+        
+    }, 10000);
+}
+
+// Обработка ссылки для входа при загрузке страницы
+function handleEmailLinkSignIn() {
+    // Проверяем, есть ли ссылка для входа в URL
+    if (auth.isSignInWithEmailLink(window.location.href)) {
+        console.log("Обнаружена ссылка для входа по email");
+        
+        // Получаем email из localStorage или из URL
+        let email = localStorage.getItem('emailForSignIn');
+        
+        // Если нет в localStorage, пробуем получить из URL параметра
+        if (!email) {
+            const urlParams = new URLSearchParams(window.location.search);
+            email = urlParams.get('email');
+        }
+        
+        if (!email) {
+            // Если email не найден, запрашиваем у пользователя
+            promptForEmailAfterLink();
+            return;
+        }
+        
+        // Выполняем вход по ссылке
+        completeEmailLinkSignIn(email);
+    }
+}
+// Самый простой генератор (без проверки уникальности)
+function getRandomUsername() {
+    const adjectives = ['быстрый', 'смелый', 'умный', 'веселый', 'добрый', 'крутой', 'милый', 'rock', 'cool', 'super'];
+    const nouns = ['тигр', 'волк', 'лиса', 'панда', 'дракон', 'робот', 'звезда', 'tiger', 'wolf', 'dragon'];
+    const numbers = Math.floor(Math.random() * 1000);
+    
+    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+    const noun = nouns[Math.floor(Math.random() * nouns.length)];
+    
+    return adj + '_' + noun + numbers;
+}
+
+
+
+async function completeEmailLinkSignIn(email) {
+    try {
+        showNotification("Выполняется вход...", "info");
+        
+        // Выполняем вход
+        const result = await auth.signInWithEmailLink(email, window.location.href);
+        
+        console.log("Успешный вход по email ссылке:", result.user);
+        
+        // Очищаем сохраненный email
+        localStorage.removeItem('emailForSignIn');
+        
+        // Очищаем URL от параметров
+        window.history.replaceState({}, document.title, window.location.pathname);
+        
+        showNotification("Вход выполнен успешно!", "success");
+        
+        // Проверяем, есть ли пользователь в базе данных
+        const user = result.user;
+        const snap = await db.ref("users/" + user.uid).once("value");
+        const generatorUsername = getRandomUsername();
+		
+        if (!snap.exists()) {
+            // Новый пользователь - создаем запись
+            await db.ref("users/" + user.uid).set({
+                nickname: user.email.split('@')[0] || generatorUsername,
+                avatar: DEFAULT_AVATAR, 
+                description: "Привет! я использую Виаграмка!",
+                online: true,
+                email: user.email,
+                authMethod: 'email-link'
+            });
+            
+            showNotification("Профиль успешно зарегистрирован", "info");
+			
+        }
+        
+        // Закрываем модальное окно входа
+        hideModal(authModal);
+        
+    } catch (error) {
+        console.error("Ошибка входа по ссылке:", error);
+        
+        let errorMessage = "Ошибка входа";
+        switch (error.code) {
+            case 'auth/invalid-email':
+                errorMessage = "Неверный email";
+                break;
+            case 'auth/expired-action-code':
+                errorMessage = "Ссылка устарела. Запросите новую";
+                break;
+            case 'auth/invalid-action-code':
+                errorMessage = "Недействительная ссылка";
+                break;
+            case 'auth/user-disabled':
+                errorMessage = "Аккаунт заблокирован";
+                break;
+            case 'auth/user-not-found':
+                errorMessage = "Пользователь не найден";
+                break;
+            default:
+                errorMessage = error.message;
+        }
+        
+        showNotification(errorMessage, "error");
+        document.getElementById('authError').textContent = errorMessage;
+        
+        // Запрашиваем email снова
+        promptForEmailAfterLink();
+    }
+}
+
+// Запрос email если он не был сохранен
+function promptForEmailAfterLink() {
+    const email = prompt("Для завершения входа введите ваш email:");
+    
+    if (email) {
+        completeEmailLinkSignIn(email);
+    } else {
+        showNotification("Вход отменен", "warning");
+    }
+}
+
+// Обновляем функцию обработки состояния аутентификации
+auth.onAuthStateChanged(async (user) => {
+    if (user) {
+        // Проверяем, существует ли пользователь в базе данных
+        const snap = await db.ref("users/" + user.uid).once("value");
+        const data = snap.val() || {};
+        
+        // Обновляем информацию о пользователе
+        currentUser = {
+            uid: user.uid,
+            email: user.email,
+            nickname: data.nickname || user.email?.split('@')[0] || "Пользователь",
+            avatar: data.avatar || DEFAULT_AVATAR,
+            description: data.description || "Привет! я использую Viagram!",
+            authMethod: data.authMethod || 'email-link'
+        };
+        
+        // Если пользователь вошел через email link, обновляем метод аутентификации
+        if (user.providerData.some(p => p.providerId === 'email')) {
+            await db.ref("users/" + user.uid).update({
+                authMethod: 'email-link',
+                email: user.email
+            });
+        }
+        
+        const blocked = await db.ref(`blockedUsers/${currentUser.uid}`).once("value");
+        blockedUsers = blocked.val() || {};
+        
+        userAvatar.src = currentUser.avatar;
+        updateOnlineStatus(currentUser.uid, true);
+        
+        window.addEventListener("beforeunload", () => updateOnlineStatus(currentUser.uid, false));
+        
+        await loadUserSettings(currentUser.uid);
+        loadFriends();
+        loadChannels();
+        
+        hideModal(authModal);
+        hideModal(registerModal);
+        
+        if (chatIdFromUrl) {
+            await openChatFromUrl(chatIdFromUrl);
+        }
+        
+        // Показываем уведомление о способе входа
+        if (currentUser.authMethod === 'email-link') {
+            showNotification("Вы вошли через email ссылку", "info");
+        }
+        
+    } else {
+        currentUser = null;
+        blockedUsers = {};
+        userAvatar.src = DEFAULT_AVATAR;
+        friendsList.innerHTML = '';
+        channelsList.innerHTML = '';
+        chatMessages.innerHTML = '';
+        chatName.textContent = "Выберите чат";
+        chatAvatar.src = '';
+        showModal(authModal);
+    }
+});
+
+// Добавляем кнопку для отправки новой ссылки в профиле
+function addEmailLinkSettings() {
+    const profileModal = document.getElementById('profileModal');
+    if (!profileModal) return;
+    
+    // Добавляем секцию после привязанных аккаунтов
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+                if (profileModal.classList.contains('active')) {
+                    setTimeout(() => {
+                        addEmailLinkToProfile();
+                    }, 500);
+                }
+            }
+        });
+    });
+    
+    observer.observe(profileModal, { attributes: true });
+}
+
+// Добавляем информацию о email link в профиль
+function addEmailLinkToProfile() {
+    if (!currentUser) return;
+    
+    const linkedAccountsSection = document.getElementById('linkedAccountsSection');
+    if (!linkedAccountsSection) return;
+    
+    // Проверяем, есть ли уже информация о email link
+    const existingEmailLink = document.getElementById('emailLinkInfo');
+    if (existingEmailLink) return;
+    
+    // Создаем элемент для отображения информации
+    const emailLinkDiv = document.createElement('div');
+    emailLinkDiv.id = 'emailLinkInfo';
+    emailLinkDiv.className = 'settings-item';
+    emailLinkDiv.style.cssText = `
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--border);
+    `;
+    
+    emailLinkDiv.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="var(--text-secondary)">
+                <path d="M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z"/>
+            </svg>
+            <span class="settings-label">Email для входа</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="settings-value" style="color: var(--text-secondary);">${currentUser.email || 'не указан'}</span>
+            <span class="verified-badge" style="background: #4CAF50; width: 8px; height: 8px; border-radius: 50%;"></span>
+        </div>
+    `;
+    
+    // Вставляем перед кнопками действий
+    linkedAccountsSection.insertBefore(emailLinkDiv, linkedAccountsSection.firstChild);
+}
+
+// Инициализация
+addEmailLinkSettings();
+
+// Вызываем обработку ссылки при загрузке страницы
+document.addEventListener('DOMContentLoaded', () => {
+    handleEmailLinkSignIn();
+});
+// Функция для воспроизведения голосового сообщения
+window.playVoiceMessage = function(btn) {
+    const voiceMessage = btn.closest('.voice-message');
+    const audioUrl = voiceMessage.dataset.audioUrl;
+    const progressFill = voiceMessage.querySelector('.voice-progress-fill');
+    const audio = new Audio(audioUrl);
+    
+    // Если уже играет
+    if (window.currentAudio && window.currentAudio.src === audioUrl && !window.currentAudio.paused) {
+        window.currentAudio.pause();
+        btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+        return;
+    }
+    
+    // Останавливаем предыдущее
+    if (window.currentAudio) {
+        window.currentAudio.pause();
+        const prevBtn = document.querySelector('.voice-play-btn.playing');
+        if (prevBtn) {
+            prevBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+            prevBtn.classList.remove('playing');
+        }
+    }
+    
+    window.currentAudio = audio;
+    
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+    btn.classList.add('playing');
+    
+    audio.ontimeupdate = () => {
+        const progress = (audio.currentTime / audio.duration) * 100;
+        progressFill.style.width = progress + '%';
+    };
+    
+    audio.onended = () => {
+        btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+        btn.classList.remove('playing');
+        progressFill.style.width = '0%';
+        window.currentAudio = null;
+    };
+    
+    audio.play().catch(e => {
+        console.error("Ошибка воспроизведения:", e);
+        showNotification("Не удалось воспроизвести аудио", "error");
+    });
+};
+
+// Инициализация при загрузке страницы
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        initVoiceMessages();
+    }, 500);
+});
     async function sendAudio(blob) {
         if (!currentChat) return;
         const url = URL.createObjectURL(blob);
@@ -3464,7 +4562,192 @@ function uploadCompressedImage(blob) {
         };
         reader.readAsDataURL(blob);
     }
+	async function previewVoiceRecording(blob) {
+    if (previewAudio) {
+        previewAudio.pause();
+        previewAudio = null;
+    }
+    
+    const url = URL.createObjectURL(blob);
+    previewAudio = new Audio(url);
+    
+    // Создаем модальное окно предпрослушивания
+    const previewModal = document.createElement('div');
+    previewModal.className = 'modal active';
+    previewModal.innerHTML = `
+        <div class="modal-content" style="max-width: 400px;">
+            <h2 class="modal-title">Предпрослушивание</h2>
+            <div style="text-align: center; margin: 20px 0;">
+                <div class="voice-message-player" style="justify-content: center;">
+                    <button class="play-btn" onclick="document.getElementById('previewAudio').play()">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+                            <path d="M8 5v14l11-7z"/>
+                        </svg>
+                    </button>
+                    <div class="duration" style="display: none;" id="previewDuration">0:00 / 0:00</div>
+                </div>
+                <audio id="previewAudio" src="${url}" style="display: none;"></audio>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button class="modal-btn primary" onclick="sendPreviewVoice()">Отправить</button>
+                <button class="modal-btn secondary" onclick="cancelPreviewVoice()">Отмена</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(previewModal);
+    
+    // Обновляем длительность
+    previewAudio.onloadedmetadata = () => {
+        const duration = document.getElementById('previewDuration');
+        if (duration) {
+            const minutes = Math.floor(previewAudio.duration / 60);
+            const seconds = Math.floor(previewAudio.duration % 60);
+            duration.textContent = `0:00 / ${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+    };
+    
+    previewAudio.ontimeupdate = () => {
+        const duration = document.getElementById('previewDuration');
+        if (duration && previewAudio.duration) {
+            const currentMinutes = Math.floor(previewAudio.currentTime / 60);
+            const currentSeconds = Math.floor(previewAudio.currentTime % 60);
+            const totalMinutes = Math.floor(previewAudio.duration / 60);
+            const totalSeconds = Math.floor(previewAudio.duration % 60);
+            duration.textContent = `${currentMinutes}:${currentSeconds.toString().padStart(2, '0')} / ${totalMinutes}:${totalSeconds.toString().padStart(2, '0')}`;
+        }
+    };
+    
+    window.previewAudioBlob = blob;
+}
 
+
+async function sendPreviewVoice() {
+    if (window.previewAudioBlob) {
+        const duration = Math.floor(previewAudio.duration);
+        await sendVoiceMessage(window.previewAudioBlob, duration);
+        
+        // Закрываем модальное окно
+        document.querySelector('.modal.active').remove();
+        window.previewAudioBlob = null;
+    }
+}
+
+
+function cancelPreviewVoice() {
+    if (previewAudio) {
+        previewAudio.pause();
+        previewAudio = null;
+    }
+    document.querySelector('.modal.active').remove();
+    window.previewAudioBlob = null;
+}
+// Модифицируйте функцию stopVoiceRecording для поддержки предпрослушивания
+function stopVoiceRecording(preview = false) {
+    if (!isRecording || !mediaRecorder) return;
+    
+    if (mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+    }
+    
+    voiceMessageBtn.classList.remove('recording');
+    stopRecordingTimer();
+    
+    // Если включен режим предпрослушивания
+    if (preview && audioChunks.length > 0) {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+        previewVoiceRecording(audioBlob);
+        audioChunks = []; // Очищаем, чтобы не отправить дважды
+    }
+}
+async function startVoiceRecordingWithOptions(quality = 'medium') {
+    if (!currentChat) {
+        showNotification('Выберите чат для записи', 'error');
+        return;
+    }
+    
+    if (isRecording) {
+        showNotification('Уже идет запись', 'warning');
+        return;
+    }
+    
+    // Настройки качества
+    const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+    };
+    
+    // Разные настройки для разного качества
+    switch(quality) {
+        case 'high':
+            audioConstraints.sampleRate = 48000;
+            audioConstraints.channelCount = 2;
+            break;
+        case 'medium':
+            audioConstraints.sampleRate = 44100;
+            audioConstraints.channelCount = 1;
+            break;
+        case 'low':
+            audioConstraints.sampleRate = 22050;
+            audioConstraints.channelCount = 1;
+            break;
+    }
+    
+    try {
+        recordingStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+        
+        // Выбираем оптимальные настройки для записи
+        const options = {
+            mimeType: 'audio/webm;codecs=opus',
+            audioBitsPerSecond: quality === 'high' ? 64000 : (quality === 'medium' ? 32000 : 16000)
+        };
+        
+        mediaRecorder = new MediaRecorder(recordingStream, options);
+        
+        audioChunks = [];
+        isRecording = true;
+        recordingStartTime = Date.now();
+        
+        mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+                audioChunks.push(e.data);
+            }
+        };
+        
+        mediaRecorder.onstop = async () => {
+            if (audioChunks.length > 0) {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
+                const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
+                
+                if (duration >= 1) {
+                    await sendVoiceMessage(audioBlob, duration);
+                } else {
+                    showNotification('Слишком короткое сообщение', 'warning');
+                }
+            }
+            
+            recordingStream.getTracks().forEach(track => track.stop());
+            removeRecordingIndicator();
+            isRecording = false;
+        };
+        
+        mediaRecorder.start(100);
+        
+        showRecordingIndicator();
+        startRecordingTimer();
+        
+        voiceMessageBtn.classList.add('recording');
+        
+        // Показываем уведомление о качестве
+        showNotification(`Запись начата (качество: ${quality})`, 'info');
+        
+    } catch (error) {
+        console.error('Ошибка доступа к микрофону:', error);
+        showNotification('Нет доступа к микрофону', 'error');
+        isRecording = false;
+    }
+}
     function getAudioDuration(url) {
         return new Promise(resolve => {
             audioPlayer.src = url;
@@ -4053,18 +5336,29 @@ function uploadImageToFreeImageHost(file, callback) {
         });
     }
 
-    // ========== INIT ==========
-    function init() {
-        checkServerStatus();
-        const savedTheme = localStorage.getItem('theme');
-        const savedColor = localStorage.getItem('colorTheme');
-        if (savedTheme) { currentTheme = savedTheme; themeToggle.checked = currentTheme === 'light'; applyTheme(currentTheme); }
-        if (savedColor) { currentColorTheme = savedColor; applyColorTheme(currentColorTheme); }
-		setTimeout(() => {
-		initEmojiPicker();
+function init() {
+    checkServerStatus();
+    const savedTheme = localStorage.getItem('theme');
+    const savedColor = localStorage.getItem('colorTheme');
+    if (savedTheme) { currentTheme = savedTheme; themeToggle.checked = currentTheme === 'light'; applyTheme(currentTheme); }
+    if (savedColor) { currentColorTheme = savedColor; applyColorTheme(currentColorTheme); }
+    
+    // Слушатель для обновления статуса комментариев при изменении канала
+    if (currentChat && currentChat.type === 'channel') {
+        db.ref(`channels/${currentChat.id}/verified`).on('value', (snap) => {
+            if (currentChat) {
+                const isVerified = snap.val() === 1 || snap.val() === 2;
+                currentChat.isVerified = isVerified;
+                updateChannelCommentsStatus(currentChat.id);
+            }
+        });
+    }
+    
+    setTimeout(() => {
+        initEmojiPicker();
         showChannels();
     }, 100);
-    }
+}
 // ========== PWA FUNCTIONS ==========
 
 // Регистрация Service Worker
@@ -4176,75 +5470,11 @@ window.addEventListener('offline', () => {
   document.getElementById('serverOffline').style.display = 'flex';
 });
 
-// Функция для добавления на главный экран
-function showAddToHomeScreen() {
-  // Проверяем, не установлено ли уже приложение
-  if (window.matchMedia('(display-mode: standalone)').matches) {
-    return; // Уже установлено
-  }
-  
-  // Проверяем, показывали ли уже уведомление
-  if (localStorage.getItem('addToHomeScreenShown')) {
-    return;
-  }
-  
-  // Показываем уведомление через 30 секунд после загрузки
-  setTimeout(() => {
-    // Проверяем для разных браузеров
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-    const isAndroid = /Android/.test(navigator.userAgent);
-    
-    if (isIOS || isAndroid) {
-      const notification = document.createElement('div');
-      notification.className = 'notification info';
-      notification.style.cssText = `
-        position: fixed;
-        bottom: 20px;
-        left: 16px;
-        right: 16px;
-        background: var(--bg-secondary);
-        border-radius: 16px;
-        padding: 16px;
-        border-left: 4px solid var(--primary);
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        z-index: 3000;
-        animation: slideUp 0.3s ease;
-        max-width: 400px;
-        margin: 0 auto;
-      `;
-      
-      const message = isIOS 
-        ? 'Нажмите "Поделиться" → "На экран "Домой"' 
-        : 'Нажмите "Установить приложение" в меню браузера';
-      
-      notification.innerHTML = `
-        
-      `;
-      
-      document.body.appendChild(notification);
-    }
-  }, 30000);
-}
+
 
 // Инициализация PWA
 function initPWA() {
-  registerServiceWorker();
-  showAddToHomeScreen();
   
-  // Обновляем тему при изменении
-  const observer = new MutationObserver(() => {
-    if (document.querySelector('meta[name="theme-color"]')) {
-      const themeColor = document.querySelector('meta[name="theme-color"]');
-      themeColor.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--primary').trim() || '#6C63FF');
-    }
-  });
-  
-  observer.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ['class']
-  });
 }
 
 // Запускаем PWA инициализацию после загрузки страницы
@@ -4254,46 +5484,81 @@ if (document.readyState === 'loading') {
   initPWA();
 }
 
-    // ========== COMMENTS FUNCTIONS ==========
-    // (NEW)
-    async function showComments(messageId) {
-        if (!currentChat || currentChat.type !== 'channel') {
-            showNotification('Комментарии доступны только в каналах', 'error');
-            return;
-        }
-        // Load the message data
-        const msgSnap = await db.ref(`channelMessages/${currentChat.id}/${messageId}`).once('value');
-        const messageData = msgSnap.val();
-        if (!messageData) {
-            showNotification('Сообщение не найдено', 'error');
-            return;
-        }
-        currentCommentMessage = { id: messageId, ...messageData };
-        commentsModalTitle.textContent = `Комментарии к посту`;
-        commentInput.value = '';
-        replyToComment = null;
-        replyToCommentContainer.classList.add('hidden');
+    
+async function showComments(messageId) {
+    if (!currentChat || currentChat.type !== 'channel') {
+        showNotification('Комментарии доступны только в каналах', 'error');
+        return;
+    }
+    
+    // ПРОВЕРКА НА ВЕРИФИКАЦИЮ КАНАЛА
+    if (!currentChat.isVerified) {
+        showNotification('Комментарии доступны только для верифицированных каналов с галочкой ✓', 'warning');
+        return;
+    }
+    
+    // Загружаем данные сообщения
+    const msgSnap = await db.ref(`channelMessages/${currentChat.id}/${messageId}`).once('value');
+    const messageData = msgSnap.val();
+    if (!messageData) {
+        showNotification('Сообщение не найдено', 'error');
+        return;
+    }
+    
+    currentCommentMessage = { id: messageId, ...messageData };
+    commentsModalTitle.textContent = `Комментарии к посту`;
+    commentInput.value = '';
+    replyToComment = null;
+    replyToCommentContainer.classList.add('hidden');
+    
+    loadComments(currentChat.id, messageId);
+    showModal(commentsModal);
+}
 
-        loadComments(currentChat.id, messageId);
-        showModal(commentsModal);
+function loadComments(channelId, messageId) {
+   
+    if (!currentChat.isVerified) {
+        if (commentsList) {
+            commentsList.innerHTML = `
+                <div class="empty-state">
+                    <p>🔒 Комментарии отключены</p>
+                    <p style="font-size: 12px;">Эта функция доступна только для верифицированных каналов</p>
+                </div>
+            `;
+        }
+        return;
+    }
+    
+    if (currentCommentsListener) {
+        db.ref(`channelComments/${channelId}/${messageId}`).off('value', currentCommentsListener);
     }
 
-    function loadComments(channelId, messageId) {
-        if (currentCommentsListener) {
-            db.ref(`channelComments/${channelId}/${messageId}`).off('value', currentCommentsListener);
-        }
+    const commentsRef = db.ref(`channelComments/${channelId}/${messageId}`);
+    
+    currentCommentsListener = commentsRef.on('value', (snapshot) => {
+        const comments = snapshot.val() || {};
+        renderComments(comments);
+    });
+}
 
-        const commentsRef = db.ref(`channelComments/${channelId}/${messageId}`);
-
-        currentCommentsListener = commentsRef.on('value', (snapshot) => {
-            const comments = snapshot.val() || {};
-            renderComments(comments);
-        });
+function renderComments(commentsObj) {
+         if (!commentsList) return;
+    
+    if (!currentChat.isVerified) {
+        commentsList.innerHTML = `
+            <div class="empty-state">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="var(--warning)" style="margin-bottom: 16px;">
+                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+                </svg>
+                <p>Комментарии доступны только для верифицированных каналов</p>
+                <p style="font-size: 12px; margin-top: 8px;">Получите галочку для включения комментариев</p>
+            </div>
+        `;
+        return;
     }
-
-    function renderComments(commentsObj) {
-        if (!commentsList) return;
-
+        const isGroup = channel.type === 'group';
+		if(currentChat.type === "group") return;
+		
         const commentsArray = Object.entries(commentsObj).map(([key, val]) => ({ key, ...val }));
         commentsArray.sort((a, b) => a.timestamp - b.timestamp);
 
@@ -4309,39 +5574,54 @@ if (document.readyState === 'loading') {
         commentsList.innerHTML = html;
     }
 
-    function renderCommentHTML(comment) {
-        const timeStr = formatTime(comment.timestamp);
-        const isOwner = comment.senderId === currentUser?.uid;
-
-        let replyBlock = '';
-        if (comment.replyTo) {
-            replyBlock = `<div class="reply-indicator" onclick="jumpToComment('${comment.replyTo}')">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
-                в ответ
-            </div>`;
-        }
-
-        const deleteBtn = isOwner ? `<button class="comment-delete-btn" onclick="deleteComment('${comment.key}')">Удалить</button>` : '';
-
-        return `
-            <div class="comment-item" id="comment-${comment.key}">
-                
-                <div class="comment-content">
-                    <div class="comment-header">
-                        <span class="comment-author">${sanitize(comment.senderName)}</span>
-                        <span class="comment-time">${timeStr}</span>
-                    </div>
-                    ${replyBlock}
-                    <div class="comment-text">${parseMarkdown(comment.text)}</div>
-                    <div class="comment-footer">
-                        <button class="comment-reply-btn" onclick="setReplyToComment('${comment.key}', '${sanitize(comment.senderName)}', '${sanitize(comment.text)}')">Ответить</button>
-                        ${deleteBtn}
-                    </div>
-                </div>
-            </div>
-        `;
+function renderCommentHTML(comment) {
+    const timeStr = formatTime(comment.timestamp);
+    const isOwner = comment.senderId === currentUser?.uid;
+    
+    // Проверяем, является ли текущий пользователь владельцем канала
+    let isChannelOwner = false;
+    if (currentChat && currentChat.type === 'channel' && currentChat.id) {
+        // Проверяем в реальном времени, может быть асинхронно
+        db.ref(`channels/${currentChat.id}/createdBy`).once('value').then(snap => {
+            isChannelOwner = (snap.val() === currentUser?.uid);
+        });
     }
 
+    let replyBlock = '';
+    if (comment.replyTo) {
+        replyBlock = `<div class="reply-indicator" onclick="jumpToComment('${comment.replyTo}')">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z"/></svg>
+            в ответ
+        </div>`;
+    }
+
+   
+    const showDeleteBtn = isOwner || (currentChat && currentChat.type === 'channel' && currentChat.isChannelOwner);
+    
+    const deleteBtn = showDeleteBtn ? 
+        `<button class="comment-delete-btn" onclick="deleteComment('${comment.key}', true)">Удалить</button>` : '';
+
+    return `
+        <div class="comment-item" id="comment-${comment.key}">
+            <div class="comment-content">
+                <div class="comment-header">
+                    <span class="comment-author">${sanitize(comment.senderName)}</span>
+                    <span class="comment-time">${timeStr}</span>
+                </div>
+                ${replyBlock}
+                <div class="comment-text">${parseMarkdown(comment.text)}</div>
+                <div class="comment-footer">
+                    <button class="comment-reply-btn" onclick="setReplyToComment('${comment.key}', '${sanitize(comment.senderName)}', '${sanitize(comment.text).replace(/'/g, "\\'")}')">Ответить</button>
+                    ${deleteBtn}
+                </div>
+            </div>
+        </div>
+    `;
+	if(currentChat.isChannelOwner === currentUser.uid)
+	{
+		document.getElementById('delete${comment.key}').style.display = 'flex';
+	}
+}
     function setReplyToComment(commentId, senderName, commentText) {
         replyToComment = { id: commentId, senderName, text: commentText };
         replyToCommentName.textContent = senderName;
