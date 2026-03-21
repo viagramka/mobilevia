@@ -13,7 +13,52 @@
     const auth = firebase.auth();
     const db = firebase.database();
     const provider = new firebase.auth.GoogleAuthProvider();
-   
+   auth.getRedirectResult().then(async (result) => {
+    if (result.user) {
+        const user = result.user;
+        const snap = await db.ref("users/" + user.uid).once("value");
+        
+        if (!snap.exists()) {
+            // Новый пользователь - создаем профиль
+            await db.ref("users/" + user.uid).set({
+                nickname: user.displayName || "Пользователь",
+                avatar: user.photoURL || DEFAULT_AVATAR,
+                description: "Привет! я использую Viagram!",
+                online: true
+            });
+        }
+        
+        // Показываем уведомление об успешном входе
+        showNotification("Добро пожаловать!", "success");
+        
+        // Закрываем модальные окна
+        hideModal(authModal);
+        hideModal(registerModal);
+        
+        // Обновляем данные пользователя
+        const userSnap = await db.ref("users/" + user.uid).once("value");
+        const data = userSnap.val() || {};
+        currentUser = {
+            uid: user.uid,
+            email: user.email,
+            nickname: data.nickname || "Пользователь",
+            avatar: data.avatar || DEFAULT_AVATAR,
+            description: data.description || "Привет! я использую Viagram!"
+        };
+        
+        userAvatar.src = currentUser.avatar;
+        updateOnlineStatus(currentUser.uid, true);
+        await loadUserSettings(currentUser.uid);
+        loadFriends();
+        loadChannels();
+        
+        // Перенаправляем на главную страницу (если нужно)
+        // window.location.href = '/';
+    }
+}).catch((error) => {
+    console.error("Ошибка входа через Google:", error);
+    showNotification("Ошибка входа: " + error.message, "error");
+});
 	
 	// Конфигурация Cloudinary (лучше хранить в переменных окружения, но для демо можно здесь)
 const CLOUDINARY_CONFIG = {
@@ -670,7 +715,7 @@ async function signInWithGoogle(isRegistration = false) {
             prompt: 'select_account'
         });
         
-        const result = await auth.signInWithPopup(provider);
+        const result = await auth.signInWithRedirect(provider);
         const user = result.user;
         
         console.log("Успешный вход через Google:", user.email);
@@ -1107,7 +1152,7 @@ function processChannelsUpdate(snapshot) {
 // Модифицируем функцию входа через Google для поддержки привязки
 async function signInWithGoogle(isRegistration = false) {
     try {
-        const result = await auth.signInWithPopup(provider);
+        const result = await auth.signInWithRedirect(provider);
         const user = result.user;
         
         // Проверяем, существует ли пользователь в базе
