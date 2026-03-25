@@ -1634,7 +1634,163 @@ function applyColorTheme(colorTheme) {
     function createCheckmarkSVG() {
         return `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="var(--accent)"><path d="m344-60-76-128-144-32 14-148-98-112 98-112-14-148 144-32 76-128 136 58 136-58 76 128 144 32-14 148 98 112-98 112 14 148-144 32-76 128-136-58-136 58Zm34-102 102-44 104 44 56-96 110-26-10-112 74-84-74-86 10-112-110-24-58-96-102 44-104-44-56 96-110 24 10 112-74 86 74 84-10 114 110 24 58 96Zm102-318Zm-42 142 226-226-56-58-170 170-86-84-56 56 142 142Z"/></svg>`;
     }
+    // ========== ТАЙМЕР ДЛЯ ИВЕНТА SEA BATTLE ==========
 
+// Функция для обновления таймера до 31 марта
+function updateSeaBattleTimer() {
+    const timerElement = document.getElementById('seaBattleTimer');
+    if (!timerElement) return;
+    
+    // Дата окончания ивента: 31 марта текущего года, 23:59:59
+    const now = new Date();
+    const endDate = new Date(now.getFullYear(), 2, 31, 23, 59, 59); // Март - это 2 (0-индексация)
+    
+    // Если сегодня уже после 31 марта, то ивент закончился
+    if (now > endDate) {
+        timerElement.textContent = '❌ Ивент окончен';
+        timerElement.classList.add('expired');
+        
+        // Делаем кнопку неактивной
+        const eventBtn = document.getElementById('eventSeaBattleBtn');
+        if (eventBtn) {
+            eventBtn.style.opacity = '0.5';
+            eventBtn.style.cursor = 'not-allowed';
+            eventBtn.onclick = () => {
+                showNotification('Ивент "Морской бой" завершился! Следите за новыми ивентами.', 'warning');
+            };
+        }
+        return;
+    }
+    
+    // Вычисляем оставшееся время
+    const diff = endDate - now;
+    
+    // Если ивент ещё не начался, но 31 марта ещё не наступило
+    if (diff > 0) {
+        const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+        const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+        const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+        
+        // Форматируем отображение
+        let timerText = '';
+        if (days > 0) {
+            timerText = `${days}д ${hours}ч`;
+        } else if (hours > 0) {
+            timerText = `${hours}ч ${minutes}м`;
+        } else if (minutes > 0) {
+            timerText = `${minutes}м ${seconds}с`;
+        } else {
+            timerText = `${seconds}с`;
+        }
+        
+        timerElement.textContent = `${timerText}`;
+        
+        
+        if (diff < 3600000) {
+            timerElement.style.background = '#FF9800';
+        } else {
+            timerElement.style.background = 'var(--error)';
+        }
+        
+      
+        if (diff < 60000) {
+            timerElement.style.animation = 'pulse 0.5s infinite';
+        } else {
+            timerElement.style.animation = 'pulse 1.5s infinite';
+        }
+    }
+    
+    // Обновляем таймер каждую секунду
+    setTimeout(updateSeaBattleTimer, 1000);
+}
+
+// Функция запуска ивента "Морской бой"
+async function startSeaBattleEvent() {
+    // Проверяем, не закончился ли ивент
+    const now = new Date();
+    const endDate = new Date(now.getFullYear(), 2, 31, 23, 59, 59);
+    
+    if (now > endDate) {
+        showNotification('Ивент "Морской бой" завершился! Следите за новыми ивентами.', 'warning');
+        return;
+    }
+    
+    // Проверяем, авторизован ли пользователь
+    if (!currentUser) {
+        showNotification("Войдите в аккаунт, чтобы участвовать в ивенте", "error");
+        showModal(authModal);
+        return;
+    }
+    
+    // Показываем уведомление о начале ивента
+    const daysLeft = Math.ceil((endDate - now) / (1000 * 60 * 60 * 24));
+    showNotification(`🌊 Морской бой! Осталось ${daysLeft} дней до окончания ивента! ⚓`, "success");
+    
+    // Здесь будет логика игры "Морской бой"
+    // Открываем модальное окно с игрой
+    showSeaBattleModal();
+}
+
+// Функция для показа модального окна игры
+function showSeaBattleModal() {
+    const now = new Date();
+    const endDate = new Date(now.getFullYear(), 2, 31, 23, 59, 59);
+    const daysLeft = Math.ceil((endDate - now) / (1000 * 60 * 60 * 24));
+    const hoursLeft = Math.floor((endDate - now) / (1000 * 60 * 60));
+    
+    const modal = document.createElement('div');
+    modal.className = 'modal active';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 500px;">
+            <h2 class="modal-title">🌊 Морской бой ⚓</h2>
+            <div style="text-align: center; padding: 20px;">
+                <div style="background: var(--surface); border-radius: 16px; padding: 16px; margin-bottom: 20px;">
+                    <p style="font-size: 14px; color: var(--text-secondary);">Осталось до окончания ивента:</p>
+                    <p style="font-size: 24px; font-weight: bold; color: var(--primary);">${daysLeft} дней ${hoursLeft % 24} часов</p>
+                </div>
+                <p>Игра в разработке!</p>
+                <p style="font-size: 12px; color: var(--text-secondary); margin-top: 10px;">
+                    🎮 Ивент активен до 31 марта
+                </p>
+            </div>
+            <button class="modal-btn primary" onclick="this.closest('.modal').remove()">Закрыть</button>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+// Запускаем таймер при загрузке страницы
+document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+        updateSeaBattleTimer();
+    }, 500);
+});
+
+// Также обновляем таймер при открытии чатов (на случай если кнопка появилась позже)
+if (window.MutationObserver) {
+    const observer = new MutationObserver(() => {
+        if (document.getElementById('seaBattleTimer')) {
+            updateSeaBattleTimer();
+            observer.disconnect();
+        }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+}
+function startSeaBattle() {
+	const uid = currentUser.uid;
+	const nickname = currentUser.nickname;
+    // Кодируем параметры для безопасной передачи в URL
+    const encodedUid = encodeURIComponent(uid);
+    const encodedNickname = encodeURIComponent(nickname);
+    
+    
+    
+    
+    const url = `https://viagramka.ru/seabattle.html?uid=${encodedUid}&nickname=${encodedNickname}`;
+    
+    window.location.href = url;
+}
     function loadFriends() {
     if (!currentUser || !friendsList) return;
 
