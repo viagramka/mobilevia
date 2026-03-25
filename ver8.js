@@ -1,5 +1,4 @@
-
-    const firebaseConfig = {
+const firebaseConfig = {
   apiKey: "AIzaSyARdq9PV3CHItkiHDTB1vE-Y2PUakPA3CA",
   authDomain: "viag-3739c.firebaseapp.com",
   databaseURL: "https://viag-3739c-default-rtdb.firebaseio.com",
@@ -9,11 +8,38 @@
   appId: "1:548621063751:web:447e7911f454da3e810362"
 };
 
-    firebase.initializeApp(firebaseConfig);
-    const auth = firebase.auth();
-    const db = firebase.database();
-    const provider = new firebase.auth.GoogleAuthProvider();
-   
+firebase.initializeApp(firebaseConfig);
+
+// Включаем дебаг режим для локальной разработки
+if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    // Временный токен для дебага
+    self.FIREBASE_APPCHECK_DEBUG_TOKEN = true;
+    console.log("App Check: дебаг режим включен");
+}
+
+// Проверяем, что App Check доступен
+if (firebase.appCheck) {
+    try {
+        const appCheck = firebase.appCheck();
+        
+        // Проверяем наличие ReCaptchaV3Provider
+        if (firebase.appCheck.ReCaptchaV3Provider) {
+            const provider = new firebase.appCheck.ReCaptchaV3Provider('6LeZz5QsAAAAADyxYmB5jo7l8PAek8p6c0HRnYhS');
+            appCheck.activate(provider, true);
+            console.log("App Check активирован");
+        } else {
+            console.warn("ReCaptchaV3Provider не доступен, пропускаем App Check");
+        }
+    } catch (error) {
+        console.error("Ошибка активации App Check:", error);
+    }
+} else {
+    console.log("App Check не поддерживается");
+}
+
+const auth = firebase.auth();
+const db = firebase.database();
+const provider = new firebase.auth.GoogleAuthProvider();
 	
 	// Конфигурация Cloudinary (лучше хранить в переменных окружения, но для демо можно здесь)
 const CLOUDINARY_CONFIG = {
@@ -136,7 +162,7 @@ let audioAnalyser = null;
     let replyToComment = null;                  // комментарий, на который отвечаем
     let currentCommentsListener = null;          // для отслеживания комментариев в реальном времени
 
-    const DEFAULT_AVATAR = "https://s10.iimage.su/s/24/th_gBLEtZ0xmRHICa1VWted3qYVAkGVWCX9Vkzypewdi.png";
+    const DEFAULT_AVATAR = "https://res.cloudinary.com/dbjexsgbh/image/upload/v1774395533/viagramka/voice/mgui2bmol3r0gjwtip49.jpg";
     
 const emojiCategories = {
     '😊 Смайлики': ['😀','😃','😄','😁','😆','😅','😂','🤣','😊','😇','🙂','🙃','😉','😌','😍','🥰','😘','😗','😙','😚','😋','😛','😝','😜','🤪','🤨','🧐','🤓','😎','🤩','🥳','😏','😒','😞','😔','😟','😕','🙁','☹️','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','😰','😥','😓','🤗','🤔','🤭','🤫','🤥','😶','😐','😑','😬','🙄','😯','😦','😧','😮','😲','🥱','😴','🤤','😪','😵','🤐','🥴','🤢','🤮','🤧','😷','🤒','🤕','🤑','🤠'],
@@ -158,13 +184,18 @@ const emojiCategories = {
     const email = document.getElementById('email');
     const password = document.getElementById('password');
 	
-
+    const setNewAccountModal = document.getElementById('profileModal2');
     const sendSound = document.getElementById('sendSound');
     const receiveSound = document.getElementById('receiveSound');
     const regNickname = document.getElementById('regNickname');
     const regEmail = document.getElementById('regEmail');
     const regPassword = document.getElementById('regPassword');
     const loginBtn = document.getElementById('loginBtn');
+	const sendRegisterLinkBtn = document.getElementById('sendRegisterLinkBtn');
+const registerStep1 = document.getElementById('registerStep1');
+const registerInfo = document.getElementById('registerInfo');
+const sentEmailSpan = document.getElementById('sentEmail');
+const registerErrorEl = document.getElementById('registerError');
     const registerBtn = document.getElementById('registerBtn');
     const showRegisterBtn = document.getElementById('showRegisterBtn');
     const showLoginBtn = document.getElementById('showLoginBtn');
@@ -228,9 +259,12 @@ const emojiCategories = {
     const onlineVisibility = document.getElementById('onlineVisibility');
     const profileAvatarPreview = document.getElementById('profileAvatarPreview');
     const profileNickname = document.getElementById('profileNickname');
+	const profileAvatarPreview2 = document.getElementById('profileAvatarPreview2');
+    const profileNickname2 = document.getElementById('profileNickname2');
     const profileDescription = document.getElementById('profileDescription');
     const profileError = document.getElementById('profileError');
     const saveProfileBtn = document.getElementById('saveProfileBtn');
+	const saveProfileBtn2 = document.getElementById('saveProfileBtn2');
     const closeProfileBtn = document.getElementById('closeProfileBtn');
     const logoutBtn = document.getElementById('logoutBtn');
     const avatarUpload = document.getElementById('avatarUpload');
@@ -302,6 +336,76 @@ const emojiCategories = {
     const IMAGEKIT_URL_ENDPOINT = 'https://ik.imagekit.io/r8xgskt4t';
     const SIGNATURE_ENDPOINT = 'https://your-cloud-function-url/generateImageKitSignature';
 
+// ID бота
+const WELCOME_BOT_ID = "wNjk2UxzEJOpeVqZ6l8hkIdEbNy2";
+
+// Данные бота
+const WELCOME_BOT_DATA = {
+    nickname: "Грамка",
+    avatar: "https://s10.iimage.su/s/24/th_gBLEtZ0xmRHICa1VWted3qYVAkGVWCX9Vkzypewdi.png",
+    description: "Привет! Я Грамка - твой помощник!"
+};
+
+// Функция для проверки, первый ли раз пользователь в мессенджере
+async function isFirstTimeUser(userId) {
+    try {
+        // Проверяем флаг в базе данных
+        const flagSnap = await db.ref(`userSettings/${userId}/firstTimeWelcome`).once('value');
+        const hasFlag = flagSnap.val();
+        
+        // Если флага нет - пользователь первый раз
+        return !hasFlag;
+    } catch (error) {
+        console.error("Ошибка проверки первого входа:", error);
+        return true;
+    }
+}
+
+// Функция для отправки приветственного сообщения от бота
+async function sendWelcomeMessageFromBot(userId, userName) {
+    try {
+        // Проверяем, существует ли бот в базе
+        const botSnap = await db.ref(`users/${WELCOME_BOT_ID}`).once('value');
+        
+        if (!botSnap.exists()) {
+            // Создаем бота если его нет
+            await db.ref(`users/${WELCOME_BOT_ID}`).set({
+                nickname: WELCOME_BOT_DATA.nickname,
+                avatar: WELCOME_BOT_DATA.avatar,
+                description: WELCOME_BOT_DATA.description,
+                online: true,
+                isBot: true,
+                createdAt: Date.now()
+            });
+        }
+        
+        // Создаем чат с ботом
+        const chatId = getChatId(userId, WELCOME_BOT_ID);
+        
+        // Приветственное сообщение
+        const welcomeText = `Привет! Это я - Грамка! 👋`;
+        
+        const msgObj = {
+            text: welcomeText,
+            senderId: WELCOME_BOT_ID,
+            senderName: WELCOME_BOT_DATA.nickname,
+            timestamp: Date.now(),
+            read: false
+        };
+        
+        // Отправляем сообщение
+        await db.ref(`messages/${chatId}`).push(msgObj);
+        
+        // Сохраняем флаг, что приветствие уже отправлено
+        await db.ref(`userSettings/${userId}/firstTimeWelcome`).set(true);
+        await db.ref(`userSettings/${userId}/firstTimeWelcomeDate`).set(Date.now());
+        
+        console.log("Приветственное сообщение отправлено пользователю:", userName);
+        
+    } catch (error) {
+        console.error("Ошибка отправки приветственного сообщения:", error);
+    }
+}
 async function uploadToImageKit(file) {
   try {
     // 1. Получаем подпись
@@ -662,29 +766,83 @@ async function updateLinkedAccountsUI() {
     }
 }
 
+// Улучшенная функция входа через Google
 async function signInWithGoogle(isRegistration = false) {
     try {
-        // Настраиваем провайдера
+        // Настраиваем провайдер с правильными параметрами
         provider.setCustomParameters({
             prompt: 'select_account'
         });
         
-        // Используем signInWithRedirect вместо popup
-        await auth.signInWithRedirect(provider);
+        const result = await auth.signInWithPopup(provider);
+        const user = result.user;
         
-        // Сохраняем флаг, что это регистрация
-        if (isRegistration) {
-            localStorage.setItem('googleSignUpMode', 'true');
+        console.log("Успешный вход через Google:", user.email);
+        
+        
+        const snap = await db.ref("users/" + user.uid).once("value");
+        
+        if (!snap.exists()) {
+            // регистрация в случае отсутствия акка
+            const displayName = getRandomUsername();
+            const photoURL = user.photoURL || DEFAULT_AVATAR;
+            
+            await db.ref("users/" + user.uid).set({
+                nickname: displayName,
+                avatar: photoURL,
+                description: "Привет! я использую Виаграмка!",
+                online: true,
+                email: user.email,
+                authMethod: 'google',
+                createdAt: Date.now()
+            });
+            
+            showNotification("Профиль успешно создан!", "success");
+        } else {
+            // Существующий пользователь - обновляем информацию
+            await db.ref(`users/${user.uid}`).update({
+                online: true,
+                lastLogin: Date.now()
+            });
         }
         
+        if (isRegistration) {
+            hideModal(registerModal);
+        } else {
+            hideModal(authModal);
+        }
+        
+        showNotification("Успешный вход через Google!", "success");
+        
     } catch (error) {
-        console.error("Ошибка при редиректе Google:", error);
+        console.error("Ошибка входа через Google:", error);
         
         let errorMessage = "Ошибка входа через Google";
-        if (error.code === 'auth/popup-blocked') {
-            errorMessage = "Всплывающее окно заблокировано. Разрешите всплывающие окна";
-        } else if (error.code === 'auth/unauthorized-domain') {
-            errorMessage = "Домен не авторизован в Firebase";
+        
+        switch (error.code) {
+            case 'auth/popup-closed-by-user':
+                errorMessage = "Окно авторизации было закрыто";
+                break;
+            case 'auth/popup-blocked':
+                errorMessage = "Всплывающее окно заблокировано. Разрешите всплывающие окна";
+                break;
+            case 'auth/cancelled-popup-request':
+                errorMessage = "Запрос авторизации отменен";
+                break;
+            case 'auth/account-exists-with-different-credential':
+                errorMessage = "Аккаунт уже существует с другим методом входа";
+                break;
+            case 'auth/auth-domain-config-required':
+                errorMessage = "Ошибка конфигурации домена";
+                break;
+            case 'auth/operation-not-allowed':
+                errorMessage = "Вход через Google не активирован в консоли Firebase";
+                break;
+            case 'auth/unauthorized-domain':
+                errorMessage = "Домен не авторизован в Firebase";
+                break;
+            default:
+                errorMessage = error.message;
         }
         
         if (isRegistration) {
@@ -693,16 +851,10 @@ async function signInWithGoogle(isRegistration = false) {
             authError.textContent = errorMessage;
         }
         
-        showNotification(errorMessage, "error");
+        showNotification(`Ошибка: ${errorMessage}`, "error");
     }
 }
-googleLoginBtn.addEventListener('click', () => {
-    signInWithGoogle(false);
-});
 
-googleRegisterBtn.addEventListener('click', () => {
-    signInWithGoogle(true);
-});
 // Обновляем обработчики для кнопок Google
 document.addEventListener('DOMContentLoaded', function() {
     // Заменяем существующие обработчики
@@ -1059,7 +1211,7 @@ function processChannelsUpdate(snapshot) {
 // Модифицируем функцию входа через Google для поддержки привязки
 async function signInWithGoogle(isRegistration = false) {
     try {
-        const result = await auth.signInWithRedirect(provider);
+        const result = await auth.signInWithPopup(provider);
         const user = result.user;
         
         // Проверяем, существует ли пользователь в базе
@@ -1173,7 +1325,6 @@ auth.onAuthStateChanged(async (user) => {
         let data = snap.val();
         
         if (!data) {
-            
             data = {
                 nickname: user.displayName || user.email?.split('@')[0] || "Пользователь",
                 avatar: user.photoURL || DEFAULT_AVATAR,
@@ -1195,6 +1346,20 @@ auth.onAuthStateChanged(async (user) => {
             avatar: data.avatar || DEFAULT_AVATAR,
             description: data.description || "Привет! я использую Виаграмка!"
         };
+        
+        const isFirstTime = await isFirstTimeUser(currentUser.uid);
+        
+        if (isFirstTime) {
+            console.log("Первый вход пользователя, отправляем приветствие от бота");
+            await sendWelcomeMessageFromBot(currentUser.uid, currentUser.nickname);
+        }
+        
+        
+        if(data.nickname === "Пользователь" || data.nickname === "UNACTIVE")
+        {
+            showModal(setNewAccountModal);
+            setNewAccountModalSetup();
+        }
         
         const blocked = await db.ref(`blockedUsers/${currentUser.uid}`).once("value");
         blockedUsers = blocked.val() || {};
@@ -1228,110 +1393,14 @@ auth.onAuthStateChanged(async (user) => {
         showModal(authModal);
     }
 });
-// Обработка результата редиректа Google
-auth.getRedirectResult().then(async (result) => {
-    if (result.user) {
-        console.log("Успешный вход через Google redirect:", result.user.email);
-        
-        const user = result.user;
-        const isSignUp = localStorage.getItem('googleSignUpMode') === 'true';
-        
-        // Проверяем, существует ли пользователь
-        const snap = await db.ref("users/" + user.uid).once("value");
-        
-        if (!snap.exists()) {
-            // Новый пользователь - регистрация
-            const displayName = user.displayName || getRandomUsername();
-            const photoURL = user.photoURL || DEFAULT_AVATAR;
-            
-            await db.ref("users/" + user.uid).set({
-                nickname: displayName,
-                avatar: photoURL,
-                description: "Привет! я использую Виаграмка!",
-                online: true,
-                email: user.email,
-                authMethod: 'google',
-                createdAt: Date.now(),
-                linkedAccounts: {
-                    google: {
-                        email: user.email,
-                        displayName: user.displayName,
-                        photoURL: user.photoURL,
-                        linkedAt: Date.now()
-                    }
-                }
-            });
-            
-            showNotification("Профиль успешно создан!", "success");
-        } else {
-            // Существующий пользователь - обновляем данные
-            const data = snap.val();
-            await db.ref(`users/${user.uid}`).update({
-                online: true,
-                lastLogin: Date.now(),
-                avatar: user.photoURL || data.avatar,
-                'linkedAccounts/google': {
-                    email: user.email,
-                    displayName: user.displayName,
-                    photoURL: user.photoURL,
-                    linkedAt: Date.now()
-                }
-            });
-        }
-        
-        // Обновляем currentUser
-        const userSnap = await db.ref("users/" + user.uid).once("value");
-        const userData = userSnap.val();
-        
-        currentUser = {
-            uid: user.uid,
-            email: user.email,
-            nickname: userData.nickname || user.displayName || "Пользователь",
-            avatar: userData.avatar || user.photoURL || DEFAULT_AVATAR,
-            description: userData.description || "Привет! я использую Виаграмка!"
-        };
-        
-        // Обновляем UI
-        userAvatar.src = currentUser.avatar;
-        updateOnlineStatus(currentUser.uid, true);
-        await loadUserSettings(currentUser.uid);
-        loadFriends();
-        loadChannels();
-        
-        // Закрываем модальные окна
-        hideModal(authModal);
-        hideModal(registerModal);
-        
-        // Очищаем флаг регистрации
-        localStorage.removeItem('googleSignUpMode');
-        
-        showNotification("Добро пожаловать!", "success");
-        
-    }
-}).catch((error) => {
-    console.error("Ошибка при обработке редиректа Google:", error);
-    
-    // Обрабатываем конкретные ошибки
-    let errorMessage = "Ошибка входа";
-    switch (error.code) {
-        case 'auth/account-exists-with-different-credential':
-            errorMessage = "Аккаунт уже существует с другим методом входа";
-            break;
-        case 'auth/auth-domain-config-required':
-            errorMessage = "Ошибка конфигурации домена";
-            break;
-        case 'auth/operation-not-allowed':
-            errorMessage = "Вход через Google не активирован в консоли Firebase";
-            break;
-        case 'auth/unauthorized-domain':
-            errorMessage = "Домен не авторизован в Firebase";
-            break;
-        default:
-            errorMessage = error.message;
-    }
-    
-    showNotification(errorMessage, "error");
-});
+
+async function setNewAccountModalSetup()
+{
+	const nik = await getRandomUsername();
+	profileAvatarPreview2.src = currentUser.avatar || DEFAULT_AVATAR;
+    profileNickname2.value = nik;
+   
+}
     // ========== UTILITY FUNCTIONS ==========
     function sanitize(str) {
         if (!str) return "";
@@ -1563,7 +1632,7 @@ function applyColorTheme(colorTheme) {
     }
 
     function createCheckmarkSVG() {
-        return `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="lightblue"><path d="m344-60-76-128-144-32 14-148-98-112 98-112-14-148 144-32 76-128 136 58 136-58 76 128 144 32-14 148 98 112-98 112 14 148-144 32-76 128-136-58-136 58Zm34-102 102-44 104 44 56-96 110-26-10-112 74-84-74-86 10-112-110-24-58-96-102 44-104-44-56 96-110 24 10 112-74 86 74 84-10 114 110 24 58 96Zm102-318Zm-42 142 226-226-56-58-170 170-86-84-56 56 142 142Z"/></svg>`;
+        return `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="var(--accent)"><path d="m344-60-76-128-144-32 14-148-98-112 98-112-14-148 144-32 76-128 136 58 136-58 76 128 144 32-14 148 98 112-98 112 14 148-144 32-76 128-136-58-136 58Zm34-102 102-44 104 44 56-96 110-26-10-112 74-84-74-86 10-112-110-24-58-96-102 44-104-44-56 96-110 24 10 112-74 86 74 84-10 114 110 24 58 96Zm102-318Zm-42 142 226-226-56-58-170 170-86-84-56 56 142 142Z"/></svg>`;
     }
 
     function loadFriends() {
@@ -1673,7 +1742,7 @@ function processFriendsUpdate(snapshot) {
     const friendIds = Object.keys(friends);
 
     if (friendIds.length === 0) {
-        friendsList.innerHTML = '<div class="empty-state">У вас пока нет друзей</div>';
+        friendsList.innerHTML = '<div class="empty-state">У вас пока нет друзей. Нажмите на +, чтобы добавить друга!</div>';
         return;
     }
 
@@ -2366,21 +2435,21 @@ function showEmptyChatMessage() {
     
     
     let messageText = 'В этом чате пусто... Отправьте первое сообщение!';
-    let iconPath = '"M20 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"';
+    let iconPath = '👋';
     
     if (currentChat) {
         if (currentChat.type === 'channel') {
             messageText = 'В этом канале пока нет постов...';
-            iconPath = '"M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V6h16v12zM6 10h2v2H6v-2zm0 4h8v2H6v-2zm10 0h2v2h-2v-2zm-6-4h8v2h-8v-2z"';
+            iconPath = '😕';
         } else if (currentChat.type === 'friend' && currentChat.id === currentUser?.uid) {
             messageText = 'Это ваше избранное. Здесь можно сохранять заметки, фото и важные сообщения.';
-            iconPath = '"M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"';
+            iconPath = '👋';
         }
     }
     
     emptyDiv.innerHTML = `
         <div class="empty-state-icon" onclick="sayHi();">
-            <p style="font-size: 20px; cursor: pointer;" onclick="sayHi();">👋</p>
+            <p style="font-size: 20px; cursor: pointer;" onclick="sayHi();">${iconPath}</p>
         </div>
         <div class="empty-state-text">${messageText}</div>
     `;
@@ -2710,13 +2779,13 @@ function hideContextMenu() {
     // ========== OPEN CHAT ==========
     function openChat(type, id, name, avatar) {
 	
-        console.log("openChat", { type, id, name });
+        console.log("openChat", { type, id, name, avatar });
 
     if (currentChat && currentChat.id === id && currentChat.type === type) {
         console.log('Чат уже открыт');
         return;
     }
-    document.getElementById("currentPageTitle").style.display = 'none';
+    document.getElementById("header").style.display = 'none';
     hidePhotoPreview();
     if (isReplying) cancelReply();
     if (isEditing) cancelEdit();
@@ -2775,6 +2844,7 @@ function hideContextMenu() {
             }
             sendBtn.style.display = 'flex';
             attachBtn.style.display = 'flex';
+			voiceMessageBtn.style.display = 'flex';
             messageInput.disabled = false;
             sendBtn.disabled = false;
             messageInput.placeholder = "Введите сообщение...";
@@ -4268,6 +4338,67 @@ function appendVoiceMessage(msg) {
 }
 
 
+// Отправка ссылки для входа на email
+document.getElementById('sendEmailLinkBtn').addEventListener('click', async () => {
+    const email = document.getElementById('emailLinkInput').value.trim();
+    
+    if (!email) {
+        showNotification("Введите email", "error");
+        return;
+    }
+    
+    // Валидация email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        showNotification("Введите корректный email", "error");
+        return;
+    }
+    
+    try {
+        // Сохраняем email в localStorage для последующего получения
+        localStorage.setItem('emailForSignIn', email);
+        
+        // Настраиваем ActionCodeSettings
+        const actionCodeSettings = {
+            ...emailLinkActionCodeSettings,
+            // Добавляем параметр с email для дополнительной проверки
+            url: window.location.origin + window.location.pathname + '?email=' + encodeURIComponent(email)
+        };
+        
+        // Отправляем ссылку для входа
+        await auth.sendSignInLinkToEmail(email, actionCodeSettings);
+        
+        showNotification(`Ссылка для входа отправлена на ${email}. Если письмо не пришло, проверяйте папку Спам!`, "success");
+        
+        // Очищаем поле и скрываем секцию
+        document.getElementById('emailLinkInput').value = '';
+        document.getElementById('emailLinkSection').style.display = 'none';
+        
+        // Показываем сообщение пользователю
+        showEmailLinkSentMessage(email);
+        
+    } catch (error) {
+        console.error("Ошибка отправки ссылки:", error);
+        
+        let errorMessage = "Ошибка отправки ссылки";
+        switch (error.code) {
+            case 'auth/invalid-email':
+                errorMessage = "Неверный формат email";
+                break;
+            case 'auth/operation-not-allowed':
+                errorMessage = "Email link вход не активирован в консоли Firebase";
+                break;
+            case 'auth/too-many-requests':
+                errorMessage = "Слишком много попыток. Попробуйте позже";
+                break;
+            default:
+                errorMessage = error.message;
+        }
+        
+        showNotification(errorMessage, "error");
+        document.getElementById('authError').textContent = errorMessage;
+    }
+});
 
 // Функция для показа сообщения об отправке ссылки
 function showEmailLinkSentMessage(email) {
@@ -4883,7 +5014,7 @@ async function startVoiceRecordingWithOptions(quality = 'medium') {
 
             chatInfoContent.innerHTML = `
                 <div style="text-align:center;">
-                    <img src="${user.avatar || DEFAULT_AVATAR}" style="width:100px; height:100px; border-radius:23%; object-fit: cover;">
+                    <img src="${user.avatar || DEFAULT_AVATAR}" style="width:200px; height:200px; border-radius:23%; object-fit: cover;">
                     <h3>${sanitize(user.nickname)}</h3>
                     <p>${user.description || ''}</p>
                     <p>Статус: ${user.online ? 'в сети' : 'вышел из сети'}</p>
@@ -4914,7 +5045,7 @@ async function startVoiceRecordingWithOptions(quality = 'medium') {
             const isGroup = channel.type === 'group';
             chatInfoContent.innerHTML = `
                 <div style="text-align:center;">
-                    <img src="${channel.avatar || DEFAULT_AVATAR}" style="width:100px; height:100px; border-radius:23%; object-fit: cover;">
+                    <img src="${channel.avatar || DEFAULT_AVATAR}" style="width:200px; height:200px; border-radius:23%; object-fit: cover;">
                     <h3>${sanitize(channel.name)}</h3>
                     <p>${channel.description || ''}</p>
                     <p>${isGroup ? 'Группа' : 'Канал'}</p>
@@ -5004,7 +5135,7 @@ function showOtherUserInfo(userId) {
                     } else {
                         actionButtons = `
                             <button class="modal-btn primary" onclick="addFriendById('${userId}', '${sanitize(user.nickname)}')">Добавить в друзья</button>
-                            <button class="modal-btn" onclick="openChat('friend', '${userId}', '${sanitize(user.nickname)}', '${user.avatar || DEFAULT_AVATAR}'); hideModal(chatInfoModal)">Написать сообщение</button>
+                            
                         `;
                     }
 
@@ -5017,7 +5148,7 @@ function showOtherUserInfo(userId) {
 
                 chatInfoContent.innerHTML = `
                     <div style="text-align:center;">
-                        <img src="${user.avatar || DEFAULT_AVATAR}" style="width:100px; height:100px; border-radius:23%; object-fit: cover; margin-bottom: 10px;">
+                        <img src="${user.avatar || DEFAULT_AVATAR}" style="width:200px; height:200px; border-radius:23%; object-fit: cover; margin-bottom: 10px;">
                         <h3 style="display: flex; align-items: center; justify-content: center; gap: 5px;">
                             ${sanitize(user.nickname)}
                             ${verifiedBadge}
@@ -5042,7 +5173,7 @@ function showOtherUserInfo(userId) {
             // Если пользователь не авторизован
             chatInfoContent.innerHTML = `
                 <div style="text-align:center;">
-                    <img src="${user.avatar || DEFAULT_AVATAR}" style="width:100px; height:100px; border-radius:23%; object-fit: cover; margin-bottom: 10px;">
+                    <img src="${user.avatar || DEFAULT_AVATAR}" style="width:200px; height:200px; border-radius:23%; object-fit: cover; margin-bottom: 10px;">
                     <h3>${sanitize(user.nickname)}</h3>
                     <p style="margin: 10px 0; color: var(--text-secondary);">${user.description || 'Нет описания'}</p>
                     <p style="margin: 5px 0;">${user.online ? 'в сети' : 'вышел из сети'}</p>
@@ -5397,15 +5528,21 @@ function init() {
     if (savedTheme) { currentTheme = savedTheme; themeToggle.checked = currentTheme === 'light'; applyTheme(currentTheme); }
     if (savedColor) { currentColorTheme = savedColor; applyColorTheme(currentColorTheme); }
     
+    // Слушатель для обновления статуса комментариев при изменении канала
+    if (currentChat && currentChat.type === 'channel') {
+        db.ref(`channels/${currentChat.id}/verified`).on('value', (snap) => {
+            if (currentChat) {
+                const isVerified = snap.val() === 1 || snap.val() === 2;
+                currentChat.isVerified = isVerified;
+                updateChannelCommentsStatus(currentChat.id);
+            }
+        });
+    }
+    
     setTimeout(() => {
-        showSubscriptions();
+        initEmojiPicker();
         showChannels();
     }, 100);
-    
-    // Обработка редиректа при загрузке страницы
-    auth.getRedirectResult().catch((error) => {
-        console.error("Ошибка при редиректе:", error);
-    });
 }
 // ========== PWA FUNCTIONS ==========
 
@@ -5743,8 +5880,8 @@ backToChats.addEventListener('click', () => {
     currentChat = null;
     chatMessages.innerHTML = '';
     emptyMessage = false;
-	 document.getElementById("currentPageTitle").style.display = 'block';
-	  document.getElementById("currentPageTitle").style.display = 'flex';
+	 document.getElementById("header").style.display = 'block';
+	  document.getElementById("header").style.display = 'flex';
     // Удаляем заглушку
     removeEmptyChatMessage();
     
@@ -5824,14 +5961,23 @@ backToChats.addEventListener('click', () => {
     saveProfileBtn.addEventListener('click', async () => {
         const file = avatarUpload.files[0];
         const ok = await updateProfile(profileNickname.value.trim(), profileDescription.value.trim(), file);
-        showNotification("Подождите, применяем...");
+        showNotification("Применено!", 'success');
         if (ok) hideModal(profileModal);
+    });
+	saveProfileBtn2.addEventListener('click', async () => {
+        const file = avatarUpload.files[0];
+        const ok = await updateProfile(profileNickname2.value.trim(), profileDescription.value.trim(), file);
+        showNotification("Применено!", 'success');
+        if (ok) hideModal(setNewAccountModal);
     });
 
     avatarUpload.addEventListener('change', (e) => {
         if (e.target.files[0]) {
             const reader = new FileReader();
-            reader.onload = ev => profileAvatarPreview.src = ev.target.result;
+            reader.onload = ev =>{
+                profileAvatarPreview.src = ev.target.result; 
+				profileAvatarPreview2.src = ev.target.result; 
+			}				
             reader.readAsDataURL(e.target.files[0]);
         }
     });
@@ -5973,9 +6119,133 @@ photoInput.addEventListener('change', (e) => {
     });
 
     // ========== AUTH ==========
-    showRegisterBtn.addEventListener('click', (e) => { e.preventDefault(); showNotification("Регистрироваться можно только через Гугл", 'warning'); });
-    showLoginBtn.addEventListener('click', (e) => { e.preventDefault(); hideModal(registerModal); showModal(authModal); });
+    showRegisterBtn.addEventListener('click', (e) => { e.preventDefault(); showModal(registerModal); hideModal(authModal); });
+    
+	if(showLoginBtn)
+	{
+			showLoginBtn.addEventListener('click', (e) => { e.preventDefault(); hideModal(registerModal); showModal(authModal); });
 
+	}
+function goToRegisterPage() {
+	const regEmailInput = document.getElementById('regEmail');
+    const email = regEmailInput.value.trim();
+    
+    if (!email) {
+        if (registerErrorEl) registerErrorEl.textContent = "Введите email";
+        showNotification("Введите email", "error");
+        return;
+    }
+    
+    // Валидация email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        if (registerErrorEl) registerErrorEl.textContent = "Введите корректный email";
+        showNotification("Введите корректный email", "error");
+        return;
+    }
+    
+    // Сохраняем email в localStorage
+    localStorage.setItem('pendingRegistrationEmail', email);
+    
+    // Переходим на страницу регистрации
+    window.location.href = `viagramka.ru/register.html?email=${encodeURIComponent(email)}`;
+}
+
+
+// Функция для проверки активации после перехода по ссылке
+async function checkAccountActivation() {
+    // Проверяем, есть ли pending регистрация
+    const pending = localStorage.getItem('pendingRegistration');
+    if (!pending) return;
+    
+    const pendingData = JSON.parse(pending);
+    const now = Date.now();
+    
+    // Если прошло больше часа, очищаем
+    if (now - pendingData.timestamp > 3600000) {
+        localStorage.removeItem('pendingRegistration');
+        return;
+    }
+    
+    // Проверяем, авторизован ли пользователь
+    const user = auth.currentUser;
+    if (user && user.uid === pendingData.uid) {
+        // Проверяем, активирован ли аккаунт
+        const snap = await db.ref(`users/${user.uid}`).once('value');
+        const userData = snap.val();
+        
+        if (userData && userData.nickname === "UNACTIVE") {
+            // Показываем модальное окно для установки никнейма
+            showSetNicknameModal(user.uid);
+        }
+        
+        localStorage.removeItem('pendingRegistration');
+    }
+}
+
+// Модальное окно для установки никнейма после активации
+function showSetNicknameModal(uid) {
+    const modal = document.createElement('div');
+    modal.className = 'modal active';
+    modal.innerHTML = `
+        <div class="modal-content">
+            <h2 class="modal-title">Завершение регистрации</h2>
+            <p>Выберите никнейм для вашего аккаунта:</p>
+            <input type="text" class="modal-input" id="activationNickname" placeholder="Ваш никнейм" value="${getRandomUsername()}">
+            <button class="modal-btn primary" id="activateAccountBtn">Активировать</button>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    
+    document.getElementById('activateAccountBtn').addEventListener('click', async () => {
+        const nickname = document.getElementById('activationNickname').value.trim();
+        
+        if (!nickname) {
+            showNotification("Введите никнейм", "error");
+            return;
+        }
+        
+        await db.ref(`users/${uid}`).update({
+            nickname: nickname,
+            description: "Привет! я использую Виаграмка!",
+            isActive: true,
+            activatedAt: Date.now()
+        });
+        
+        modal.remove();
+        showNotification("Аккаунт активирован! Добро пожаловать!", "success");
+        
+        // Обновляем данные текущего пользователя
+        if (currentUser && currentUser.uid === uid) {
+            currentUser.nickname = nickname;
+            currentUser.description = "Привет! я использую Виаграмка!";
+        }
+    });
+}
+
+// Обновляем обработчик кнопки регистрации
+if (sendRegisterLinkBtn) {
+    sendRegisterLinkBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        registerUnactiveAccount();
+    });
+}
+
+// Проверяем активацию при загрузке и после входа
+document.addEventListener('DOMContentLoaded', checkAccountActivation);
+
+showRegisterBtn.addEventListener('click', (e) => { 
+    e.preventDefault(); 
+    // Сбрасываем форму регистрации
+    if (registerStep1) registerStep1.style.display = 'block';
+    if (registerInfo) registerInfo.style.display = 'none';
+    if (registerErrorEl) registerErrorEl.textContent = '';
+    const emailInput = document.getElementById('regEmail');
+    if (emailInput) emailInput.value = '';
+    
+    showModal(registerModal); 
+    hideModal(authModal); 
+});
     loginBtn.addEventListener('click', async () => {
         if (!email.value || !password.value) { authError.textContent = "Заполните поля"; return; }
         try {
@@ -6013,26 +6283,14 @@ photoInput.addEventListener('change', (e) => {
 
     googleLoginBtn.addEventListener('click', () => {
         auth.signInWithPopup(provider).catch(err => authError.textContent = err.message);
+		
     });
 
-    registerBtn.addEventListener('click', async () => {
-        if (!regNickname.value || !regEmail.value || !regPassword.value) { registerError.textContent = "Заполните поля"; return; }
-        if (regPassword.value.length < 6) { registerError.textContent = "Пароль минимум 6 символов"; return; }
-        try {
-            const check = await db.ref("users").orderByChild("nickname").equalTo(regNickname.value).once("value");
-            if (check.exists()) { registerError.textContent = "Ник уже занят"; return; }
-            const cred = await auth.createUserWithEmailAndPassword(regEmail.value, regPassword.value);
-            await db.ref("users/" + cred.user.uid).set({
-                nickname: regNickname.value,
-                avatar: DEFAULT_AVATAR,
-                description: "Привет! я использую Viagram!",
-                online: true
-            });
-            hideModal(registerModal);
-        } catch (err) { registerError.textContent = err.message; }
-    });
-
-    googleRegisterBtn.addEventListener('click', () => {
+    
+    
+    if(googleRegisterBtn)
+	{
+		googleRegisterBtn.addEventListener('click', () => {
         auth.signInWithPopup(provider).then(async (result) => {
             const user = result.user;
             const snap = await db.ref("users/" + user.uid).once("value");
@@ -6047,6 +6305,8 @@ photoInput.addEventListener('change', (e) => {
             hideModal(registerModal);
         }).catch(err => registerError.textContent = err.message);
     });
+	}
+    
 
     // ========== AUTH STATE ==========
     auth.onAuthStateChanged(async (user) => {
