@@ -1915,8 +1915,8 @@
    gap: 11px;
 }
 .event-item {
-    /**/background: #00ACFF;/**/
-	background: grey;
+    background: #00ACFF;
+    /* background: grey; */
     border: 2px solid rgba(255, 255, 255, 0.2);
     margin-bottom: 16px;
     transition: all 0.3s ease;
@@ -1943,6 +1943,36 @@
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-5px); }
 }
+/* Таймер ивента */
+.event-timer {
+    background: var(--error);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: white;
+    min-width: 80px;
+    text-align: center;
+    animation: pulse 1.5s infinite;
+    margin-left: auto;
+    font-family: monospace;
+}
+
+.event-timer.expired {
+    background: #757575;
+    animation: none;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.8;
+        transform: scale(1.05);
+    }
+}
     </style>
 
 
@@ -1967,7 +1997,7 @@
                     </svg>
                     <input type="text" id="searchInput" placeholder="Поиск..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
                 </div>
-<div class="chat-item event-item" id="eventSeaBattleBtn" onclick="showNotification('Куда спешишь? До четверга подожди и будешь играть!', 'error');">
+<div class="chat-item event-item" id="eventSeaBattleBtn" onclick="startSeaBattle();">
     <div class="chat-avatar">
         <img src="https://s10.iimage.su/s/23/th_gsuvYH3x4yGuUovNOzf05j6NoUbW3QhWA8PVz0JLR.png" alt="event" id="eventAvatar">
     </div>
@@ -1976,8 +2006,11 @@
             SEA BATTLE
         </div>
         <div class="chat-last-msg">
-            Ивент будет доступен 26 марта
+            Играйте сейчас до 31 марта!
         </div>
+    </div>
+	<div class="event-timer" id="seaBattleTimer" style="background: var(--error); border-radius: 20px; padding: 4px 12px; font-size: 12px; font-weight: 600; color: white; min-width: 80px; text-align: center;">
+        0 дн
     </div>
 </div>
 
